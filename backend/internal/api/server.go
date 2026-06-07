@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -596,10 +597,30 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleFrontend(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("Lumo Lab API is running"))
+func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
+	frontendDir := envOrDefault("FRONTEND_DIR", "/opt/lumo-lab/frontend")
+	indexPath := filepath.Join(frontendDir, "index.html")
+
+	requestPath := path.Clean("/" + r.URL.Path)
+	relPath := strings.TrimPrefix(requestPath, "/")
+
+	if relPath != "" {
+		assetPath := filepath.Join(frontendDir, relPath)
+		rootPrefix := filepath.Clean(frontendDir) + string(os.PathSeparator)
+		if strings.HasPrefix(filepath.Clean(assetPath)+string(os.PathSeparator), rootPrefix) {
+			if info, err := os.Stat(assetPath); err == nil && !info.IsDir() {
+				http.ServeFile(w, r, assetPath)
+				return
+			}
+		}
+	}
+
+	if _, err := os.Stat(indexPath); err == nil {
+		http.ServeFile(w, r, indexPath)
+		return
+	}
+
+	http.Error(w, "frontend assets not found; build frontend and set FRONTEND_DIR", http.StatusNotFound)
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
