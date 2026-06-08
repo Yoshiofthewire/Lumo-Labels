@@ -24,6 +24,9 @@ frontend/dist/
 backend/bin/
 backend/.cache/
 
+# Node / Scripts
+scripts/node_modules/
+
 # Local runtime artifacts
 lumo_lab/
 *.pid
