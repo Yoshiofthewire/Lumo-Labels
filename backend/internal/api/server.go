@@ -356,6 +356,18 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		lumoAuthUpdated := false
+		lumoAuthError := ""
+		if strings.TrimSpace(s.lumoAuthPath) != "" {
+			if err := os.MkdirAll(filepath.Dir(s.lumoAuthPath), 0o755); err != nil {
+				lumoAuthError = err.Error()
+			} else if err := os.WriteFile(s.lumoAuthPath, payload, 0o600); err != nil {
+				lumoAuthError = err.Error()
+			} else {
+				lumoAuthUpdated = true
+			}
+		}
+
 		scheduleContainerRestart(s.logger, "proton auth updated", 750*time.Millisecond)
 
 		writeJSON(w, http.StatusAccepted, map[string]any{
@@ -363,6 +375,9 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"path":             s.protonAuthPath,
 			"filename":         header.Filename,
 			"conversionMethod": "cookie-extract",
+			"lumoAuthPath":     s.lumoAuthPath,
+			"lumoAuthUpdated":  lumoAuthUpdated,
+			"lumoAuthError":    lumoAuthError,
 			"restartRequested": true,
 			"nextAction":       "Automatic restart requested to apply new Proton auth file.",
 		})

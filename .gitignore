@@ -1,0 +1,35 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Go / backend
+backend/bin/
+backend/.cache/
+
+# Local runtime artifacts
+lumo_lab/
+*.pid
+
+# Auth and secret artifacts
+**/auth.json
+**/lumo-auth.json
+**/proton-auth.json
+**/admin.env
