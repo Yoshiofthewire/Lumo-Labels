@@ -43,19 +43,18 @@ Optional for local development outside Docker:
 
 ## Setup
 
-1. Copy the example environment file:
+1. Copy Enviroment:
 
 ```bash
-cp .env.example .env
+git copy https://github.com/Yoshiofthewire/Lumo-Labels.git
 ```
 
-2. Review the values in `.env`:
+2. Generate Auth Tokens:
 
-- `PROTON_AUTH_FILE` defaults to `/lumo_lab/config/proton-auth.json`
-- `PROTON_API_HOST` can override the Proton API host if needed
-- `LUMO_BASE_URL` defaults to the local in-container Lumo service
-- `LUMO_API_KEY` is only needed if your Lumo endpoint requires one
-- `LUMO_LOCAL_ENABLED` controls whether the bundled Lumo process is started
+```bash
+node generate_lumo_auth.js
+node generate_mail_auth.js
+```
 
 3. Start the stack:
 
@@ -73,6 +72,8 @@ docker compose up --build -d
 - Password: `ChangeMeNow123!`
 
 You will be prompted to change the password after the first login.
+
+6. On the Config tab upload the generated auth.json files.
 
 ## Running
 
