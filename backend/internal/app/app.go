@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -75,10 +76,12 @@ func Run(args []string) error {
 }
 
 func runDaemon(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service) error {
-	poller, err := processor.New(cfg, logger, store, healthSvc, newProtonClient(), newLumoClient(cfg))
+	lumoClient := newLumoClient(cfg)
+	poller, err := processor.New(cfg, logger, store, healthSvc, newProtonClient(), lumoClient)
 	if err != nil {
 		return err
 	}
+	warmupLumoOnStartup(logger, lumoClient, poller)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go poller.Run()
@@ -96,10 +99,12 @@ func runServer(cfg config.Config, logger *logging.Logger, store *state.Store, he
 func runAll(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service) error {
 	protonClient := newProtonClient()
 	srv := api.NewServer(cfg, logger, store, healthSvc, protonClient)
-	poller, err := processor.New(cfg, logger, store, healthSvc, protonClient, newLumoClient(cfg))
+	lumoClient := newLumoClient(cfg)
+	poller, err := processor.New(cfg, logger, store, healthSvc, protonClient, lumoClient)
 	if err != nil {
 		return err
 	}
+	warmupLumoOnStartup(logger, lumoClient, poller)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -170,7 +175,7 @@ func newLumoClient(cfg config.Config) lumo.Client {
 	}
 	guardrail := lumo.LoadGuardrailText()
 	tuning := lumo.LoadTuningText()
-	return lumo.NewHTTPClient(baseURL, apiKey, classifyPath, guardrail, tuning, 20*time.Second)
+	return lumo.NewHTTPClient(baseURL, apiKey, classifyPath, guardrail, tuning, 3*time.Minute)
 }
 
 func newProtonClient() proton.Client {
@@ -182,4 +187,37 @@ func newProtonClient() proton.Client {
 		return proton.NewAPIClientFromEnv()
 	}
 	return &proton.StubClient{}
+}
+
+func warmupLumoOnStartup(logger *logging.Logger, client lumo.Client, trigger interface{ TriggerNow() }) {
+	type warmupClient interface {
+		Warmup(ctx context.Context) error
+	}
+
+	w, ok := client.(warmupClient)
+	if !ok {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		logger.Info("lumo startup warmup requested")
+		if err := w.Warmup(ctx); err != nil {
+			logger.Error("lumo startup warmup failed", "error", err.Error())
+			return
+		}
+		logger.Info("lumo startup warmup completed")
+		if trigger != nil {
+			logger.Info("processing unread unlabeled mail after startup warmup")
+			type unreadSweepTrigger interface {
+				TriggerUnreadSweep()
+			}
+			if sweep, ok := trigger.(unreadSweepTrigger); ok {
+				sweep.TriggerUnreadSweep()
+				return
+			}
+			trigger.TriggerNow()
+		}
+	}()
 }

@@ -13,7 +13,6 @@ const navItems = [
   ["/login", "Login"],
   ["/config", "Config"],
   ["/tuning", "Tuning"],
-  ["/labels", "Label Map"],
   ["/decisions", "Decisions"],
   ["/logs", "Logs"],
   ["/health", "Health"]

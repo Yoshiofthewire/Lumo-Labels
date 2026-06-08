@@ -4,7 +4,19 @@ async function requestJSON<T>(path: string, init?: RequestInit): Promise<T> {
     ...init
   });
   if (!response.ok) {
-    throw new Error(`request failed: ${response.status}`);
+    let detail = "";
+    try {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await response.json() as { error?: string; message?: string };
+        detail = data.error || data.message || "";
+      } else {
+        detail = (await response.text()).trim();
+      }
+    } catch {
+      detail = "";
+    }
+    throw new Error(detail ? `request failed: ${response.status} - ${detail}` : `request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
 }

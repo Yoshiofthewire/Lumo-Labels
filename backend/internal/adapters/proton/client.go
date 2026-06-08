@@ -31,6 +31,9 @@ type APIClient struct {
 	mgr        *protonapi.Manager
 	client     *protonapi.Client
 	labelByKey map[string]string
+	host       string
+	versions   []string
+	versionIdx int
 }
 
 type tokenFile struct {
@@ -40,24 +43,46 @@ type tokenFile struct {
 }
 
 func NewAPIClientFromEnv() *APIClient {
-	appVersion := strings.TrimSpace(os.Getenv("PROTON_APP_VERSION"))
-	if appVersion == "" {
-		appVersion = "web-mail@5.0.0.0"
+	host := strings.TrimSpace(os.Getenv("PROTON_API_HOST"))
+	versions := protonAppVersionsFromEnv()
+	client := &APIClient{
+		host:       host,
+		versions:   versions,
+		versionIdx: 0,
+		labelByKey: map[string]string{},
 	}
-	// Proton API validates x-pm-appversion strictly, keep this configurable.
-	opts := []protonapi.Option{protonapi.WithAppVersion(appVersion)}
-	if host := strings.TrimSpace(os.Getenv("PROTON_API_HOST")); host != "" {
-		opts = append(opts, protonapi.WithHostURL(host))
-	}
-	return &APIClient{mgr: protonapi.New(opts...), labelByKey: map[string]string{}}
+	client.mgr = newManager(host, client.currentVersion())
+	return client
 }
 
 func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string) ([]Message, string, error) {
+	maxAttempts := len(c.versions)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		messages, checkpoint, err := c.listUnreadInboxOnce(ctx, sinceCheckpoint)
+		if err == nil {
+			return messages, checkpoint, nil
+		}
+		lastErr = err
+		if !c.rotateVersionOnOutOfDate(err) {
+			break
+		}
+	}
+
+	return nil, "", lastErr
+}
+
+func (c *APIClient) listUnreadInboxOnce(ctx context.Context, sinceCheckpoint string) ([]Message, string, error) {
 	pc, err := c.ensureClient(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 
+	currentCheckpoint := sinceCheckpoint
 	if sinceCheckpoint == "" {
 		ids, err := pc.GetMessageIDs(ctx, "")
 		if err != nil {
@@ -66,22 +91,28 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 		if len(ids) == 0 {
 			return []Message{}, "", nil
 		}
-		// First run: checkpoint is set to latest known message and no historical emails are processed.
-		return []Message{}, ids[len(ids)-1], nil
+		currentCheckpoint = ""
 	}
 
-	ids, err := pc.GetMessageIDs(ctx, sinceCheckpoint)
+	ids, err := pc.GetMessageIDs(ctx, currentCheckpoint)
 	if err != nil {
 		return nil, "", err
 	}
 	if len(ids) == 0 {
-		return []Message{}, sinceCheckpoint, nil
+		return []Message{}, currentCheckpoint, nil
 	}
 
 	out := make([]Message, 0, len(ids))
+	fallbackUnreadInbox := make([]Message, 0, len(ids))
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
+		}
 		full, err := pc.GetMessage(ctx, id)
 		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		if !bool(full.Unread) || !containsLabel(full.LabelIDs, protonapi.InboxLabel) {
@@ -91,14 +122,146 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 		if full.Sender != nil {
 			sender = full.Sender.Address
 		}
-		out = append(out, Message{
+		msg := Message{
 			ID:      full.ID,
 			Subject: full.Subject,
 			Sender:  sender,
 			Body:    htmlToText(full.Body),
-		})
+		}
+		// Body contains PGP-armored ciphertext; skip it rather than sending
+		// the raw blob to Lumo. Classification uses Subject + Sender instead.
+		if isPGPArmored(full.Body) {
+			msg.Body = ""
+		}
+		fallbackUnreadInbox = append(fallbackUnreadInbox, msg)
+		if hasUserLabel(full.LabelIDs) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	if len(out) == 0 {
+		out = fallbackUnreadInbox
 	}
 	return out, ids[len(ids)-1], nil
+}
+
+func hasUserLabel(labelIDs []string) bool {
+	for _, labelID := range labelIDs {
+		if !isSystemLabel(labelID) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSystemLabel(labelID string) bool {
+	switch labelID {
+	case protonapi.InboxLabel,
+		protonapi.AllSentLabel,
+		protonapi.TrashLabel,
+		protonapi.SpamLabel,
+		protonapi.AllMailLabel,
+		protonapi.ArchiveLabel,
+		protonapi.SentLabel,
+		protonapi.DraftsLabel,
+		protonapi.AllDraftsLabel,
+		protonapi.StarredLabel,
+		protonapi.OutboxLabel,
+		protonapi.AllScheduledLabel:
+		return true
+	default:
+		return false
+	}
+}
+
+func protonAppVersionsFromEnv() []string {
+	primary := strings.TrimSpace(os.Getenv("PROTON_APP_VERSION"))
+	fallbackRaw := strings.TrimSpace(os.Getenv("PROTON_APP_VERSION_FALLBACKS"))
+
+	out := make([]string, 0, 4)
+	seen := map[string]bool{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		key := strings.ToLower(v)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, v)
+	}
+
+	add(primary)
+	for _, v := range strings.Split(fallbackRaw, ",") {
+		add(v)
+	}
+
+	if len(out) == 0 {
+		// Try newer web-mail versions first, then fallback to legacy.
+		add("web-mail@6.10.0.0")
+		add("web-mail@6.0.0.0")
+		add("web-mail@5.0.0.0")
+	}
+
+	return out
+}
+
+func newManager(host, appVersion string) *protonapi.Manager {
+	opts := []protonapi.Option{}
+	if strings.TrimSpace(appVersion) != "" {
+		opts = append(opts, protonapi.WithAppVersion(strings.TrimSpace(appVersion)))
+	}
+	if strings.TrimSpace(host) != "" {
+		opts = append(opts, protonapi.WithHostURL(strings.TrimSpace(host)))
+	}
+	return protonapi.New(opts...)
+}
+
+func isOutOfDateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "422") && strings.Contains(msg, "out of date") {
+		return true
+	}
+	if strings.Contains(msg, "refresh the page") && strings.Contains(msg, "out of date") {
+		return true
+	}
+	return false
+}
+
+func (c *APIClient) currentVersion() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.versions) == 0 {
+		return ""
+	}
+	if c.versionIdx < 0 || c.versionIdx >= len(c.versions) {
+		c.versionIdx = 0
+	}
+	return c.versions[c.versionIdx]
+}
+
+func (c *APIClient) rotateVersionOnOutOfDate(err error) bool {
+	if !isOutOfDateError(err) {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.versions) == 0 || c.versionIdx >= len(c.versions)-1 {
+		return false
+	}
+
+	c.versionIdx++
+	c.mgr = newManager(c.host, c.versions[c.versionIdx])
+	c.client = nil
+	c.labelByKey = map[string]string{}
+	return true
 }
 
 func (c *APIClient) EnsureLabel(ctx context.Context, label string) error {
@@ -111,7 +274,7 @@ func (c *APIClient) ListLabels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	labels, err := pc.GetLabels(ctx, protonapi.LabelTypeSystem, protonapi.LabelTypeLabel, protonapi.LabelTypeFolder)
+	labels, err := pc.GetLabels(ctx, protonapi.LabelTypeLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +398,10 @@ func containsLabel(labels []string, target string) bool {
 }
 
 var tagPattern = regexp.MustCompile("<[^>]+>")
+
+func isPGPArmored(s string) bool {
+	return strings.Contains(s, "-----BEGIN PGP MESSAGE-----")
+}
 
 func htmlToText(input string) string {
 	stripped := tagPattern.ReplaceAllString(input, " ")

@@ -177,8 +177,9 @@ Then point `LUMO_BASE_URL` to an external Lumo service.
 
 The Config page currently focuses on authentication and connectivity checks:
 
-- One shared `auth.json` upload action that posts to both:
+- Separate Lumo auth upload from `scripts/generate_lumo_auth.js` to:
   - `POST /api/lumo/auth`
+- Separate Mail auth upload from `scripts/generate_mail_auth.js` to:
   - `POST /api/proton/auth`
 - Lumo connectivity test (`POST /api/lumo/test`)
 
@@ -283,8 +284,9 @@ Supported runtime mode:
 1. File mode:
 - `PROTON_AUTH_FILE` (default `/lumo_lab/config/proton-auth.json`)
 - `PROTON_APP_VERSION` (optional, forwarded as `x-pm-appversion`)
+- `PROTON_APP_VERSION_FALLBACKS` (optional comma-separated fallback versions used when Proton returns 422 out-of-date)
 
-Use the Config page shared auth upload to convert and persist Proton tokens.
+Use the Config page Mail auth upload (`scripts/generate_mail_auth.js`) to convert and persist Proton tokens.
 
 ## Development Commands
 

@@ -30,6 +30,7 @@ lumo_lab/
 
 # Auth and secret artifacts
 **/auth.json
+**/*_auth.json
 **/lumo-auth.json
 **/proton-auth.json
 **/admin.env

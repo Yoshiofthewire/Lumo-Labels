@@ -68,33 +68,57 @@ func (p *Poller) Stop() {
 	}
 }
 
+func (p *Poller) TriggerNow() {
+	p.tick()
+}
+
+func (p *Poller) TriggerUnreadSweep() {
+	if err := p.store.SetCheckpoint(""); err != nil {
+		p.log.Error("failed to reset checkpoint for unread sweep", "error", err.Error())
+	}
+	p.tick()
+}
+
 func (p *Poller) tick() {
 	if err := p.store.Cleanup(30); err != nil {
 		p.log.Error("state cleanup failed", "error", err.Error())
 		p.health.MarkUnhealthy("state cleanup failed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	checkpoint := p.store.Checkpoint()
 	messages, nextCheckpoint, err := p.proton.ListUnreadInbox(ctx, checkpoint)
 	if err != nil {
 		p.log.Error("fetch unread inbox failed", "error", err.Error())
+		if isProtonAuthUnhealthyError(err) {
+			p.health.SetStatus(health.Status{Healthy: true, FailureReason: []string{"Proton Mail Auth Unhealthy"}})
+			return
+		}
 		p.health.MarkUnhealthy("proton unreachable")
 		return
 	}
 
 	processedCount := 0
+	skippedSeenCount := 0
+	failedCount := 0
+	rateLimitedCount := 0
 	for _, msg := range messages {
 		if p.store.Seen(msg.ID) {
+			skippedSeenCount++
 			continue
 		}
 		if !p.allowByRate() {
 			p.log.Info("rate limit reached, deferring remaining emails")
+			rateLimitedCount = len(messages) - processedCount - skippedSeenCount - failedCount
 			break
 		}
-		if err := p.handleMessage(ctx, msg); err != nil {
+		messageCtx, messageCancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		err := p.handleMessage(messageCtx, msg)
+		messageCancel()
+		if err != nil {
+			failedCount++
 			p.log.Error("message processing failed", "message_id", msg.ID, "error", err.Error())
 			_ = p.store.AddDecision(state.Decision{
 				MessageID: msg.ID,
@@ -114,11 +138,30 @@ func (p *Poller) tick() {
 		}
 	}
 
-	if processedCount > 0 {
-		p.log.Info("poll tick processed messages", "count", intToString(processedCount))
-	}
+	p.log.Info(
+		"poll tick summary",
+		"fetched", intToString(len(messages)),
+		"processed", intToString(processedCount),
+		"skipped_seen", intToString(skippedSeenCount),
+		"failed", intToString(failedCount),
+		"deferred_rate_limited", intToString(rateLimitedCount),
+	)
 	p.log.Info("poll tick completed")
 	p.health.MarkHealthy()
+}
+
+func isProtonAuthUnhealthyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "422") {
+		return true
+	}
+	if strings.Contains(msg, "out of date") || strings.Contains(msg, "refresh the page") {
+		return true
+	}
+	return false
 }
 
 func (p *Poller) handleMessage(ctx context.Context, msg proton.Message) error {
@@ -167,7 +210,7 @@ func classifyWithRetry(ctx context.Context, c lumo.Client, labels []string, send
 			return out, nil
 		}
 		if i < 2 {
-			time.Sleep(30 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 	}
 	return "", err

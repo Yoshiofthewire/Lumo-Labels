@@ -11,6 +11,23 @@ type TuningResponse = {
   path?: string;
 };
 
+type TuningSaveResponse = {
+  ok: boolean;
+  path?: string;
+  restartOk?: boolean;
+  restartError?: string;
+};
+
+const DEFAULT_LABELS = ["Questionable", "Primary", "Updates", "Social", "Promotions"];
+
+function normalizeOrderedLabels(labels: string[]): string[] {
+  const clean = labels.filter(Boolean);
+  const unique = Array.from(new Set(clean));
+  const hasQuestionable = unique.some((label) => label.toLowerCase() === "questionable");
+  const rest = unique.filter((label) => label.toLowerCase() !== "questionable");
+  return hasQuestionable ? ["Questionable", ...rest] : rest;
+}
+
 function normalizeLabelName(raw: string): string {
   return raw.replace(/^[-*]\s*/, "").replace(/:$/, "").trim();
 }
@@ -167,9 +184,18 @@ export function TuningPage() {
   function hydrateFromTuning(content: string, fallbackLabels: string[]) {
     const parsedLabels = parsePriorityLabels(content);
     const parsedDefs = parseDefinitions(content);
-    const merged = Array.from(new Set([...parsedLabels, ...fallbackLabels])).filter(Boolean);
-    setOrderedLabels(merged);
+    const merged = Array.from(new Set([...parsedLabels, ...Object.keys(parsedDefs), ...fallbackLabels])).filter(Boolean);
+    setOrderedLabels(normalizeOrderedLabels(merged));
     setLabelDefinitions(parsedDefs);
+  }
+
+  function addDefaultLabels() {
+    setOrderedLabels((prev) => {
+      const merged = Array.from(new Set([...prev, ...DEFAULT_LABELS]));
+      return normalizeOrderedLabels(merged);
+    });
+    setAllLabels((prev) => Array.from(new Set([...prev, ...DEFAULT_LABELS])));
+    setTuningStatus("Default labels added.");
   }
 
   async function syncLabels() {
@@ -180,7 +206,7 @@ export function TuningPage() {
       setOrderedLabels((prev) => {
         const keep = prev.filter((label) => fresh.includes(label));
         const add = fresh.filter((label) => !keep.includes(label));
-        return [...keep, ...add];
+        return normalizeOrderedLabels([...keep, ...add]);
       });
       setTuningStatus("Labels synced from Proton.");
     } catch {
@@ -189,12 +215,13 @@ export function TuningPage() {
   }
 
   function moveLabel(index: number, direction: -1 | 1) {
+    if (orderedLabels[index]?.toLowerCase() === "questionable") return;
     const nextIndex = index + direction;
     if (nextIndex < 0 || nextIndex >= orderedLabels.length) return;
     const next = [...orderedLabels];
     const [item] = next.splice(index, 1);
     next.splice(nextIndex, 0, item);
-    setOrderedLabels(next);
+    setOrderedLabels(normalizeOrderedLabels(next));
   }
 
   function buildTuningFromLabels() {
@@ -210,8 +237,12 @@ export function TuningPage() {
 
   async function saveTuning() {
     try {
-      await putJSON<{ ok: boolean; path?: string }>("/api/tuning", { content: tuningText });
-      setTuningStatus("Tuning saved.");
+      const result = await putJSON<TuningSaveResponse>("/api/tuning", { content: tuningText });
+      setTuningStatus(
+        result.restartOk === false
+          ? `Tuning saved, but Lumo restart needs attention: ${result.restartError ?? "unknown restart failure"}`
+          : "Tuning saved and Lumo restarted. Guardrail and tuning will be reloaded before the next email or test runs."
+      );
     } catch {
       setTuningStatus("Failed to save tuning file.");
     }
@@ -236,15 +267,23 @@ export function TuningPage() {
 
       <h3>Proton Labels</h3>
       <button type="button" onClick={syncLabels}>Sync Labels from Proton</button>
+      <button type="button" onClick={addDefaultLabels} style={{ marginLeft: 8 }}>Add Default Labels</button>
       {allLabels.length === 0 ? <p>No labels discovered yet.</p> : null}
 
       {orderedLabels.map((label, idx) => (
         <div key={label} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 8, marginBottom: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <strong>{label}</strong>
-            <button type="button" onClick={() => moveLabel(idx, -1)} disabled={idx === 0}>Up</button>
-            <button type="button" onClick={() => moveLabel(idx, 1)} disabled={idx === orderedLabels.length - 1}>Down</button>
+            {label.toLowerCase() !== "questionable" ? (
+              <>
+                <button type="button" onClick={() => moveLabel(idx, -1)} disabled={idx === 0}>Up</button>
+                <button type="button" onClick={() => moveLabel(idx, 1)} disabled={idx === orderedLabels.length - 1}>Down</button>
+              </>
+            ) : null}
           </div>
+          {label.toLowerCase() === "questionable" ? (
+            <p style={{ marginTop: 0, marginBottom: 8 }}>This prompt is provided by built-in guardrails.</p>
+          ) : null}
           <textarea
             rows={3}
             value={labelDefinitions[label] ?? ""}
@@ -254,7 +293,8 @@ export function TuningPage() {
                 [label]: e.target.value
               }))
             }
-            placeholder="Definition/instructions for this label"
+            placeholder={label.toLowerCase() === "questionable" ? "Provided by built-in guardrails" : "Definition/instructions for this label"}
+            disabled={label.toLowerCase() === "questionable"}
             style={{ width: "100%" }}
           />
         </div>

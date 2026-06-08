@@ -170,6 +170,11 @@ func (s *Server) handleTuning(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(s.tuningPath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				fallback := strings.TrimSpace(lumo.LoadTuningText())
+				if fallback != "" {
+					writeJSON(w, http.StatusOK, map[string]any{"content": fallback, "path": s.tuningPath})
+					return
+				}
 				writeJSON(w, http.StatusOK, map[string]any{"content": ""})
 				return
 			}
@@ -193,7 +198,15 @@ func (s *Server) handleTuning(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to save tuning file", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": s.tuningPath})
+		restartOk := true
+		restartError := ""
+		if err := restartLumoProcess(r.Context()); err != nil {
+			restartOk = false
+			restartError = err.Error()
+		} else {
+			lumo.ResetWarmupState()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": s.tuningPath, "restartOk": restartOk, "restartError": restartError})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -270,6 +283,7 @@ func (s *Server) handleLumoAuth(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		lumo.ResetWarmupState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
 			"path":      s.lumoAuthPath,
@@ -369,7 +383,13 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		scheduleContainerRestart(s.logger, "proton auth updated", 750*time.Millisecond)
+		restartRequested := false
+		nextAction := "Daemon restarted automatically to apply new Proton tokens."
+		if err := restartDaemonProcess(r.Context()); err != nil {
+			restartRequested = true
+			nextAction = "Automatic container restart requested to apply new Proton tokens."
+			scheduleContainerRestart(s.logger, "proton auth updated", 750*time.Millisecond)
+		}
 
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"ok":               true,
@@ -379,8 +399,8 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"lumoAuthPath":     s.lumoAuthPath,
 			"lumoAuthUpdated":  lumoAuthUpdated,
 			"lumoAuthError":    lumoAuthError,
-			"restartRequested": true,
-			"nextAction":       "Automatic restart requested to apply new Proton auth file.",
+			"restartRequested": restartRequested,
+			"nextAction":       nextAction,
 		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -622,7 +642,7 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
-		prompt = "Email Address: test@example.com\nSubject Line: Lumo connectivity test\nReturn only the label Questionable"
+		prompt = "Email Address: test@example.com  Subject Line: Lumo connectivity test Return only the label Updates"
 	}
 
 	allowed := cfg.Labels.Allowlist
@@ -636,7 +656,7 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	result, err := client.Classify(ctx, allowed, "test@example.com", "Lumo connectivity test", prompt)
+	result, err := client.Classify(ctx, allowed, "", "", prompt)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -768,6 +788,7 @@ func restartLumoProcess(ctx context.Context) error {
 
 	out, err := run("-c", "/etc/supervisord.conf", "restart", "lumo")
 	if err == nil {
+		lumo.ResetWarmupState()
 		return nil
 	}
 
@@ -779,6 +800,7 @@ func restartLumoProcess(ctx context.Context) error {
 	if strings.Contains(lower, "not running") || strings.Contains(lower, "spawn error") || strings.Contains(lower, "fatal") {
 		startOut, startErr := run("-c", "/etc/supervisord.conf", "start", "lumo")
 		if startErr == nil {
+			lumo.ResetWarmupState()
 			return nil
 		}
 		if strings.TrimSpace(startOut) != "" {
@@ -787,6 +809,37 @@ func restartLumoProcess(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("restart lumo: %s", msg)
+}
+
+func restartDaemonProcess(ctx context.Context) error {
+	run := func(args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "supervisorctl", args...)
+		cmd.Env = os.Environ()
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	out, err := run("-c", "/etc/supervisord.conf", "restart", "daemon")
+	if err == nil {
+		return nil
+	}
+
+	msg := out
+	if msg == "" {
+		msg = err.Error()
+	}
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "not running") || strings.Contains(lower, "spawn error") || strings.Contains(lower, "fatal") {
+		startOut, startErr := run("-c", "/etc/supervisord.conf", "start", "daemon")
+		if startErr == nil {
+			return nil
+		}
+		if strings.TrimSpace(startOut) != "" {
+			msg = msg + "; start attempt: " + strings.TrimSpace(startOut)
+		}
+	}
+
+	return fmt.Errorf("restart daemon: %s", msg)
 }
 
 type storageStateCookie struct {
