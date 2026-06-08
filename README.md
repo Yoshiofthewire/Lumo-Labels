@@ -1,109 +1,63 @@
 
-<img src="https://github.com/Yoshiofthewire/Lumo-Labels/blob/f858ef92df478cffb12844f103c43d6a2b6b851c/lumolabel.png"  />
+<img src="./lumolabel.png" alt="Lumo Labels" />
 
-# Lumo Labels: Proton Mail Auto-Labeler
+# Lumo Labels
 
-Lumo Labels is a Dockerized application that scans unread Proton Mail inbox messages, classifies them with Lumo API V2, and applies Proton labels using deterministic rules.
+Lumo Labels is a Dockerized Proton Mail auto-labeler. It polls unread inbox mail, classifies each message with the local Lumo model, and applies the matching Proton label.
 
-Classification prompts are composed in this order:
+The runtime is a single Docker container managed by `supervisord`. It runs the Go API server, the polling daemon, and the local Lumo API V2 process together.
 
-1. `GARDRAIL.md`
-2. `TUNING.md`
-3. Message-specific classification prompt (sender, subject, body, allowlist)
+## What It Does
 
-This repository currently includes:
+For each unread inbox message, the app:
 
-- Go backend daemon + API server
-- React web interface
-- Single-container runtime with `supervisord`
-- Local Lumo API V2 process support inside the same container
+1. Fetches the message from Proton Mail.
+2. Redacts configured sensitive content.
+3. Builds a classification prompt using `GARDRAIL.md`, `TUNING.md`, sender, subject, body, and recent applied decisions.
+4. Sends the prompt to Lumo.
+5. Parses the response against the allowed label list.
+6. Applies the label in Proton Mail when a match is found.
+7. Persists checkpoints and decisions so messages are not reprocessed unnecessarily.
 
-## Overview
+## Current UI
 
-The app runs as a long-lived daemon and polls Proton Mail every 5 minutes by default.
+The web UI currently includes these sections:
 
-For each eligible message:
-
-1. Fetch unread Inbox messages only
-2. Convert body to plain text and redact configured sensitive patterns
-3. Send classification prompt to Lumo
-4. Parse Lumo output using configured Proton allowlist
-5. Apply matching label to Proton message
-6. Persist state/checkpoint to avoid re-processing
-
-## Architecture
-
-- Backend (`backend/`)
-: Go service with daemon and HTTP API modes
-- Frontend (`frontend/`)
-: React + Vite web UI
-- Runtime
-: Docker container with three supervised processes:
-  - API server (`lumo-lab --mode server`)
-  - Poll daemon (`lumo-lab --mode daemon`)
-  - Local Lumo API V2 (`node lumo.js`)
-
-## Key Features Implemented
-
-- Local auth with session cookie middleware
-- First-run admin bootstrap (`admin.env`)
-- Config/state persisted in mounted volumes
-- 30-day rolling cleanup for processed IDs and decision history
-- Console + rotating log files (16 MB, keep 8)
-- Health endpoint and repair endpoint
-- Automatic unhealthy restart escalation support
-- Lumo settings configurable through web config API/UI
-- Lumo connectivity test endpoint + UI test button
-- Editable `TUNING.md` from the web UI
-- Proton label discovery exposed to the UI for tuning order/definitions
-
-## Project Structure
-
-- `backend/cmd/main.go`
-- `backend/internal/app/`
-- `backend/internal/api/`
-- `backend/internal/adapters/proton/`
-- `backend/internal/adapters/lumo/`
-- `backend/internal/processor/`
-- `backend/internal/redaction/`
-- `backend/internal/state/`
-- `frontend/src/`
-- `Dockerfile`
-- `docker-compose.yml`
-- `supervisord.conf`
-- `scripts/bootstrap.sh`
-- `scripts/start-lumo.sh`
+- Login / Change Password
+- Config
+- Tuning
+- Decisions
+- Logs
+- Labels
 
 ## Requirements
 
-- Docker + Docker Compose
+- Docker
+- Docker Compose
 
-Authentication setup guide:
-
-- [AuthHowTo.md](AuthHowTo.md)
-
-Optional for local non-Docker development:
+Optional for local development outside Docker:
 
 - Go 1.22+
 - Node.js 20+
 - npm
 
-## Quick Start (Docker)
+## Setup
 
-1. Create environment file:
+1. Copy the example environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-2. Edit `.env` values:
+2. Review the values in `.env`:
 
-- `PROTON_AUTH_FILE` (default: `/lumo_lab/config/proton-auth.json`)
-- `PROTON_APP_VERSION` (optional override; default in app code is `web-mail@5.0.0.0`)
-- `LUMO_API_KEY` if your Lumo route requires it
-- `LUMO_BASE_URL` (defaults to local in-container Lumo)
+- `PROTON_AUTH_FILE` defaults to `/lumo_lab/config/proton-auth.json`
+- `PROTON_API_HOST` can override the Proton API host if needed
+- `LUMO_BASE_URL` defaults to the local in-container Lumo service
+- `LUMO_API_KEY` is only needed if your Lumo endpoint requires one
+- `LUMO_LOCAL_ENABLED` controls whether the bundled Lumo process is started
 
-3. Build and run:
+3. Start the stack:
 
 ```bash
 docker compose up --build -d
@@ -113,155 +67,101 @@ docker compose up --build -d
 
 - Web UI: http://localhost:5866
 
-5. First login credentials:
+5. Log in with the bootstrap account:
 
 - Username: `admin`
 - Password: `ChangeMeNow123!`
-- You will be required to change the password on first login.
 
-Optional bootstrap override values in `.env`:
+You will be prompted to change the password after the first login.
 
-- `BOOTSTRAP_ADMIN_USER` (default: `admin`)
-- `BOOTSTRAP_ADMIN_PASS` (default: `ChangeMeNow123!`)
+## Running
 
-## Volumes and Persistence
+To start the app after the image is built:
 
-The container persists data via named volumes mapped to:
+```bash
+docker compose up -d
+```
+
+To rebuild after code changes:
+
+```bash
+docker compose up --build -d
+```
+
+To restart just the backend runtime after state or config changes:
+
+```bash
+docker compose exec -T lumo-lab supervisorctl restart daemon
+```
+
+## Development Checks
+
+These are the main build checks for the repo:
+
+```bash
+cd backend && go build ./...
+cd frontend && npm run build
+```
+
+## Runtime Data
+
+The container persists its data in three named volumes mapped to:
 
 - `/lumo_lab/config`
 - `/lumo_lab/logs`
 - `/lumo_lab/state`
 
-Important files:
+Important runtime files:
 
 - `/lumo_lab/config/config.yaml`
 - `/lumo_lab/config/admin.env`
-- `/lumo_lab/config/lumo-auth.json` (for local Lumo API V2 session)
-- `/lumo_lab/config/proton-auth.json` (generated Proton API token artifact)
-- `/lumo_lab/config/TUNING.md` (runtime tuning instructions; created/updated by API)
+- `/lumo_lab/config/proton-auth.json`
+- `/lumo_lab/config/lumo-auth.json`
+- `/lumo_lab/config/TUNING.md`
 - `/lumo_lab/state/state.json`
 - `/lumo_lab/state/decisions.json`
 
-## Local Lumo API V2 in Container
+## Auth and Setup Notes
 
-The image installs `carlostkd/Lumo-Api-V2` and runs it under `supervisord`.
+- The app uses session-based login with the `lumo_session` cookie.
+- First login is forced into the change-password flow.
+- The login page is also the change-password entry point once authenticated.
+- Runtime tuning is loaded from `TUNING.md` and the allowed label list is parsed from the `## Allowed Labels` section.
+- If `labels.allowlist` is empty in config, the backend auto-populates it from `TUNING.md`.
 
-### Auth bootstrap for Lumo API V2
+## Logs and Decisions
 
-Lumo API V2 requires an auth session file (`auth.json`) produced by its login flow.
+- Polling activity is written to `daemon.log`.
+- Lumo warmup and classify activity are written to `lumo-server.log`.
+- Decision history is stored in `/lumo_lab/state/decisions.json` and shown in the Decisions tab.
+- The Decisions page auto-refreshes so recent applied labels appear without manual reload.
 
-You can find the script to generate the auth file in the scripts folder.
-You can then upload those auth files to the web front end once the docker is running.
+## Local Lumo API V2
 
-### Disable local Lumo process
+The Docker image installs and starts the upstream Lumo API V2 project inside the container.
 
-Set:
+If you want to disable the bundled Lumo process and point at another service, set:
 
 ```env
 LUMO_LOCAL_ENABLED=false
 ```
 
-Then point `LUMO_BASE_URL` to an external Lumo service.
+Then update `LUMO_BASE_URL` to the external endpoint.
 
-## Web Configuration
+## Project Structure
 
-`/api/config` supports:
+- `backend/` - Go backend, API server, poller, adapters, and state store
+- `frontend/` - React + Vite web UI
+- `scripts/` - bootstrap and runtime helper scripts
+- `Dockerfile` - single-image build for backend, frontend, and Lumo runtime
+- `docker-compose.yml` - local orchestration and volume wiring
+- `supervisord.conf` - process supervision inside the container
 
-- `lumo.baseUrl`
-- `lumo.apiKey`
-- `lumo.classifyPath`
-- `labels.allowlist`
-- timezone/log/scan/rate-limit settings
+## Notes
 
-The Config page currently focuses on authentication and connectivity checks:
-
-- Separate Lumo auth upload from `scripts/generate_lumo_auth.js` to:
-  - `POST /api/lumo/auth`
-- Separate Mail auth upload from `scripts/generate_mail_auth.js` to:
-  - `POST /api/proton/auth`
-- Lumo connectivity test (`POST /api/lumo/test`)
-
-Tuning is managed in the dedicated Tuning tab and through `/api/tuning`.
-
-## Tuning and Guardrails
-
-The backend prepends `GARDRAIL.md` and `TUNING.md` before each classify request.
-
-Default tuning file resolution order:
-
-1. `TUNING_FILE` environment path (if set)
-2. `/lumo_lab/config/TUNING.md`
-3. `TUNING.md` (repo root)
-4. `/opt/lumo-lab/TUNING.md`
-
-You can read and update runtime tuning through:
-
-- `GET /api/tuning`
-- `PUT /api/tuning`
-
-Local Lumo auth file management is available through:
-
-- `GET /api/lumo/auth`
-- `POST /api/lumo/auth`
-
-`POST /api/lumo/auth` accepts the `auth.json` generated locally by the upstream Lumo API V2 auth flow, stores it in `/lumo_lab/config/lumo-auth.json`, and attempts to restart only the `lumo` supervised process.
-
-Proton auth conversion/status is available through:
-
-- `GET /api/proton/auth`
-- `POST /api/proton/auth`
-
-`POST /api/proton/auth` accepts Playwright storageState `auth.json`, extracts token pairs from Proton `AUTH-*` and `REFRESH-*` cookies, and writes `/lumo_lab/config/proton-auth.json` for backend runtime use.
-
-## Lumo Test Button
-
-The Config page includes **Run Lumo Test**.
-
-It calls backend endpoint:
-
-- `POST /api/lumo/test`
-
-Payload:
-
-```json
-{
-  "prompt": "Email Address: test@example.com\nSubject Line: Lumo connectivity test\nReturn only the label Questionable"
-}
-```
-
-Server-side timeout for this endpoint is 120 seconds.
-Response includes connection target and returned text.
-
-## Authentication and Security
-
-- Local username/password login (`/api/auth/login`)
-- First-run default credentials are bootstrapped as `admin` / `ChangeMeNow123!`
-- First login is forced to change password (`MUST_CHANGE_PASSWORD=true`)
-- Session cookie (`lumo_session`) with sliding expiry
-- Auth middleware protects operational routes
-- `/api/health`, `/api/auth/login`, `/api/auth/me`, `/api/setup` are public by design
-- API key and sensitive values can be configured in YAML and/or environment overrides
-
-## API Endpoints (Current)
-
-Public:
-
-- `GET /api/health`
-- `POST /api/auth/login`
-- `GET /api/auth/me`
-- `GET /api/setup`
-
-Protected (session required):
-
-- `POST /api/auth/logout`
-- `POST /api/auth/password`
-- `GET /api/status`
-- `GET|PUT /api/config`
-- `GET /api/labels`
-- `GET|PUT /api/tuning`
-- `GET /api/decisions`
-- `GET /api/logs`
-- `GET|POST /api/lumo/auth`
+- `GARDRAIL.md` is prepended to every classify request.
+- `TUNING.md` is prepended to every classify request and is editable from the UI.
+- The poller performs an unread sweep on startup after warmup so new labels can be applied immediately.
 - `GET|POST /api/proton/auth`
 - `POST /api/lumo/test`
 - `POST /api/health/repair`

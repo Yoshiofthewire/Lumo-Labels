@@ -71,7 +71,9 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 		return "", err
 	}
 
-	prompt := buildRuntimePrompt(sender, subject, body)
+	appendLumoServerLog(fmt.Sprintf("[CLASSIFY] From: %s | Subject: [%s]", sender, subject))
+
+	prompt := buildRuntimePrompt(allowedLabels, sender, subject, body)
 	payload := []byte(fmt.Sprintf("{\"prompt\":%s, \"webSearch\":false}", strconv.Quote(prompt)))
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -95,16 +97,18 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 				time.Sleep(15 * time.Second)
 				continue
 			}
-			return "", fmt.Errorf("lumo returned tools-only response after retries")
+			return "", nil
 		}
 		if hasEmptyMessageNoise(normalized) {
 			if attempt < 2 {
 				time.Sleep(5 * time.Second)
 				continue
 			}
+			return "", nil
 		}
 
 		searchText := stripTransientNoise(labelSearchScope(normalized))
+		appendLumoServerLog(fmt.Sprintf("[CLASSIFY RESPONSE] %s", strings.SplitN(searchText, "\n", 2)[0]))
 
 		// Find the first line that matches an allowed label (case-insensitive)
 		for _, line := range strings.Split(searchText, "\n") {
@@ -128,16 +132,16 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 	return "", fmt.Errorf("lumo classify retry limit reached")
 }
 
-func buildRuntimePrompt(sender, subject, body string) string {
+func buildRuntimePrompt(allowedLabels []string, sender, subject, body string) string {
 	body = strings.TrimSpace(body)
 	sender = strings.TrimSpace(sender)
 	subject = strings.TrimSpace(subject)
 
-	if sender == "" && subject == "" {
-		return body
+	parts := make([]string, 0, 5)
+	if len(allowedLabels) > 0 {
+		parts = append(parts, "Classify this email. Reply with exactly one label from: "+strings.Join(allowedLabels, ", ")+". Reply with only the label name and nothing else.")
+		parts = append(parts, "")
 	}
-
-	parts := make([]string, 0, 3)
 	if sender != "" {
 		parts = append(parts, "Email Address: "+sender)
 	}
@@ -148,6 +152,30 @@ func buildRuntimePrompt(sender, subject, body string) string {
 		parts = append(parts, body)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ParseAllowedLabels extracts the bullet-list items under the "## Allowed Labels" heading from a TUNING.md document.
+func ParseAllowedLabels(text string) []string {
+	var labels []string
+	inSection := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## Allowed Labels") {
+			inSection = true
+			continue
+		}
+		if inSection {
+			if strings.HasPrefix(trimmed, "## ") {
+				break
+			}
+			if strings.HasPrefix(trimmed, "- ") {
+				if label := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); label != "" {
+					labels = append(labels, label)
+				}
+			}
+		}
+	}
+	return labels
 }
 
 func (c *HTTPClient) ensureWarm(ctx context.Context) error {

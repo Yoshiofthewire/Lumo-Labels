@@ -53,7 +53,6 @@ func (p *Poller) Run() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	p.tick()
 	for {
 		select {
 		case <-ctx.Done():

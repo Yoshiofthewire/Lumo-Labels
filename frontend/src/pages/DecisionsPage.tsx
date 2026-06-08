@@ -45,6 +45,8 @@ export function DecisionsPage() {
 
   useEffect(() => {
     loadDecisions();
+    const interval = setInterval(loadDecisions, 10_000);
+    return () => clearInterval(interval);
   }, []);
 
   return (

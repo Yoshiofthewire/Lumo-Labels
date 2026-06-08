@@ -4,7 +4,7 @@ services:
     container_name: lumo-lab
     ports:
       - "5866:5866"
-      - "3333:3333"
+    #  - "3333:3333"  #Uncomment this line to expose Lumo API
     environment:
       WEB_PORT: 5866
       TZ: ${TZ:-America/New_York}

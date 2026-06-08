@@ -49,6 +49,13 @@ func Run(args []string) error {
 		return fmt.Errorf("invalid timezone %q: %w", cfg.Timezone, err)
 	}
 
+	// Auto-populate label allowlist from TUNING.md when the config has none.
+	if len(cfg.Labels.Allowlist) == 0 {
+		if labels := lumo.ParseAllowedLabels(lumo.LoadTuningText()); len(labels) > 0 {
+			cfg.Labels.Allowlist = labels
+		}
+	}
+
 	logger, err := logging.New(paths.LogDir, cfg.LogLevel)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
@@ -198,6 +205,10 @@ func warmupLumoOnStartup(logger *logging.Logger, client lumo.Client, trigger int
 
 	w, ok := client.(warmupClient)
 	if !ok {
+		// No warmup needed; trigger the first sweep immediately.
+		if trigger != nil {
+			go trigger.TriggerNow()
+		}
 		return
 	}
 

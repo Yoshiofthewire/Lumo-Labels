@@ -83,7 +83,7 @@ export function App() {
         <nav>
           {navItems.map(([to, label]) => (
             <Link key={to} to={to}>
-              {label}
+              {to === "/login" && auth.authenticated ? "Change Password" : label}
             </Link>
           ))}
         </nav>
