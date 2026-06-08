@@ -40,8 +40,12 @@ type tokenFile struct {
 }
 
 func NewAPIClientFromEnv() *APIClient {
-	// Proton API validates platform from app version token. Use known valid format.
-	opts := []protonapi.Option{protonapi.WithAppVersion("proton_0.9.0")}
+	appVersion := strings.TrimSpace(os.Getenv("PROTON_APP_VERSION"))
+	if appVersion == "" {
+		appVersion = "web-mail@5.0.0.0"
+	}
+	// Proton API validates x-pm-appversion strictly, keep this configurable.
+	opts := []protonapi.Option{protonapi.WithAppVersion(appVersion)}
 	if host := strings.TrimSpace(os.Getenv("PROTON_API_HOST")); host != "" {
 		opts = append(opts, protonapi.WithHostURL(host))
 	}
