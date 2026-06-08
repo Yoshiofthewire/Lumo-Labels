@@ -114,7 +114,6 @@ func (c *HTTPClient) classifyOnce(ctx context.Context, payload []byte) (string, 
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		appendLumoErrorLog(fmt.Sprintf("lumo request failed: %v", err))
 		return "", err
 	}
 	defer resp.Body.Close()

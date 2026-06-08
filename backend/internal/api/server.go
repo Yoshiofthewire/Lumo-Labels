@@ -632,8 +632,8 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 
 	guardrail := lumo.LoadGuardrailText()
 	tuning := lumo.LoadTuningText()
-	client := lumo.NewHTTPClient(baseURL, apiKey, path, guardrail, tuning, 60*time.Second)
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	client := lumo.NewHTTPClient(baseURL, apiKey, path, guardrail, tuning, 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	result, err := client.Classify(ctx, allowed, "test@example.com", "Lumo connectivity test", prompt)
