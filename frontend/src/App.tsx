@@ -69,7 +69,9 @@ export function App() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <h1>Lumo Labels</h1>
+        <div className="sidebar-logo">
+          <img src="/lumolabel.png" alt="Lumo Labels" style={{ width: "100%", maxWidth: 180, display: "block", margin: "0 auto 0.75rem" }} />
+        </div>
         {auth.authenticated ? (
           <div className="session-meta">
             <p>Signed in as {auth.username ?? "admin"}</p>
@@ -85,6 +87,9 @@ export function App() {
             </Link>
           ))}
         </nav>
+        <div className="sidebar-footer">
+          <p>&copy; 2026 &ndash; Licensed Under AGPL&nbsp;V3</p>
+        </div>
       </aside>
       <main className="content">
         <Routes>
