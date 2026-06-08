@@ -12,8 +12,10 @@ RUN npm install
 COPY frontend .
 RUN npm run build
 
-FROM alpine:3.20
-RUN apk add --no-cache supervisor tzdata nodejs npm git
+FROM node:20-bookworm-slim
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends supervisor tzdata git ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/lumo-lab
 COPY --from=backend-builder /app/bin/lumo-lab /usr/local/bin/lumo-lab
@@ -28,7 +30,7 @@ RUN chmod +x /opt/lumo-lab/scripts/*.sh
 RUN git clone --depth 1 https://github.com/carlostkd/Lumo-Api-V2.git /opt/lumo-api-v2 \
 	&& cd /opt/lumo-api-v2 \
 	&& npm install playwright \
-	&& npx playwright install firefox
+	&& npx playwright install --with-deps firefox
 
 ENV CONFIG_DIR=/lumo_lab/config
 ENV LOG_DIR=/lumo_lab/logs
