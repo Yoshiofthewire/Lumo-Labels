@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	protonapi "github.com/ProtonMail/go-proton-api"
 )
@@ -90,8 +91,31 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 }
 
 func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string) ([]Message, string, error) {
+	// Proactive refresh: best-effort. A fresh browser-extracted token may not
+	// be refreshable via the API client (different ClientID / App-Version), so
+	// fall back to using stored credentials directly on failure rather than
+	// blocking the entire fetch.
 	if err := c.refreshClient(ctx); err != nil {
-		return nil, "", fmt.Errorf("fetch unread inbox failed: token refresh: %w", err)
+		c.mu.Lock()
+		if c.client == nil {
+			// refreshClient cleared the client; rebuild it without a network call.
+			uid, acc, ref, tokenErr := readTokenFile()
+			if tokenErr != nil {
+				c.mu.Unlock()
+				return nil, "", fmt.Errorf("fetch unread inbox failed: %w", tokenErr)
+			}
+			pc := c.mgr.NewClient(uid, acc, ref)
+			pc.AddAuthHandler(func(a protonapi.Auth) {
+				_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
+			})
+			pc.AddDeauthHandler(func() {
+				c.mu.Lock()
+				c.client = nil
+				c.mu.Unlock()
+			})
+			c.client = pc
+		}
+		c.mu.Unlock()
 	}
 
 	maxAttempts := len(c.versions)
@@ -402,11 +426,30 @@ func readTokenFile() (string, string, string, error) {
 }
 
 func writeTokenFile(uid, acc, ref string) error {
-	b, err := json.Marshal(tokenFile{UID: uid, AccessToken: acc, RefreshToken: ref})
+	path := tokenFilePath()
+
+	// Read existing file to preserve any extra metadata fields (source, clientID, etc.).
+	existing := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &existing)
+	}
+
+	existing["uid"] = uid
+	existing["accessToken"] = acc
+	existing["refreshToken"] = ref
+	existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+
+	b, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(tokenFilePath(), b, 0600)
+
+	// Write atomically via a temp file so a crash mid-write never corrupts the credential file.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (c *APIClient) ensureLabelID(ctx context.Context, name string) (string, error) {
