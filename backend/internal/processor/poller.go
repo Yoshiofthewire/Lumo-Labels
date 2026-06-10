@@ -266,6 +266,9 @@ func classifyWithRetry(ctx context.Context, c lumo.Client, labels []string, send
 		if err == nil && out != "" {
 			return out, nil
 		}
+		if err != nil && isPermanentLumoClassifyError(err) {
+			return "", err
+		}
 		if err == nil {
 			// Classify returned no error but an empty label — treat as retryable.
 			err = fmt.Errorf("lumo returned empty label")
@@ -275,6 +278,20 @@ func classifyWithRetry(ctx context.Context, c lumo.Client, labels []string, send
 		}
 	}
 	return "", err
+}
+
+func isPermanentLumoClassifyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "422") {
+		return true
+	}
+	if strings.Contains(msg, "invalid input") || strings.Contains(msg, "unprocessable") {
+		return true
+	}
+	return false
 }
 
 func applyLabelWithRetry(ctx context.Context, c proton.Client, messageID, label string) error {
