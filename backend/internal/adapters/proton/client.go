@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -55,7 +56,44 @@ func NewAPIClientFromEnv() *APIClient {
 	return client
 }
 
+// refreshClient performs a proactive token refresh before each poll. It replaces
+// the cached client with a new one carrying fresh credentials and persists the
+// new tokens to disk so a restart always has valid credentials.
+func (c *APIClient) refreshClient(ctx context.Context) error {
+	uid, _, ref, err := readTokenFile()
+	if err != nil {
+		return err
+	}
+
+	pc, auth, err := c.mgr.NewClientWithRefresh(ctx, uid, ref)
+	if err != nil {
+		return err
+	}
+
+	// Persist the freshly issued tokens immediately.
+	_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
+
+	pc.AddAuthHandler(func(a protonapi.Auth) {
+		_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
+	})
+	pc.AddDeauthHandler(func() {
+		c.mu.Lock()
+		c.client = nil
+		c.mu.Unlock()
+	})
+
+	c.mu.Lock()
+	c.client = pc
+	c.mu.Unlock()
+
+	return nil
+}
+
 func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string) ([]Message, string, error) {
+	if err := c.refreshClient(ctx); err != nil {
+		return nil, "", fmt.Errorf("fetch unread inbox failed: token refresh: %w", err)
+	}
+
 	maxAttempts := len(c.versions)
 	if maxAttempts < 1 {
 		maxAttempts = 1
