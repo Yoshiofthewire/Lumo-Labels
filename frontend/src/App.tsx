@@ -12,7 +12,6 @@ const navItems = [
   ["/login", "Login"],
   ["/config", "Config"],
   ["/tuning", "Tuning"],
-  ["/decisions", "Decisions"],
   ["/logs", "Logs"]
 ] as const;
 

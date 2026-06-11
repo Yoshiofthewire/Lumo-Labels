@@ -282,7 +282,7 @@ export function TuningPage() {
             ) : null}
           </div>
           {label.toLowerCase() === "questionable" ? (
-            <p style={{ marginTop: 0, marginBottom: 8 }}>This prompt is provided by built-in guardrails.</p>
+            <p style={{ marginTop: 0, marginBottom: 8 }}></p>
           ) : null}
           <textarea
             rows={3}
