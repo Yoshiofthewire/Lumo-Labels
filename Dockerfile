@@ -12,10 +12,11 @@ RUN npm install
 COPY frontend .
 RUN npm run build
 
-FROM node:24.16.0-slim
+FROM node:26.3.0-slim
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends supervisor tzdata git ca-certificates lsof \
-	&& rm -rf /var/lib/apt/lists/*
+	&& rm -rf /var/lib/apt/lists/* \
+	&& useradd -m -s /bin/bash lumolab
 
 WORKDIR /opt/lumo-lab
 COPY --from=backend-builder /app/bin/lumo-lab /usr/local/bin/lumo-lab
@@ -40,6 +41,9 @@ ENV TZ=America/New_York
 ENV LUMO_LOCAL_ENABLED=true
 ENV LUMO_LOCAL_DIR=/opt/lumo-api-v2
 ENV LUMO_AUTH_FILE=/lumo_lab/config/lumo-auth.json
+
+RUN mkdir -p /lumo_lab/config /lumo_lab/logs /lumo_lab/state \
+	&& chown -R lumolab:lumolab /lumo_lab /opt/lumo-lab /opt/lumo-api-v2
 
 VOLUME ["/lumo_lab/config", "/lumo_lab/logs", "/lumo_lab/state"]
 EXPOSE 5866
