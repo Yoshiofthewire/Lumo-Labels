@@ -6,10 +6,12 @@ import { DecisionsPage } from "./pages/DecisionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { LogsPage } from "./pages/LogsPage";
 import { LabelsPage } from "./pages/LabelsPage";
+import { StatusPage } from "./pages/StatusPage";
 import { TuningPage } from "./pages/TuningPage";
 
 const navItems = [
   ["/login", "Login"],
+  ["/status", "Status"],
   ["/config", "Config"],
   ["/tuning", "Tuning"],
   ["/logs", "Logs"]
@@ -94,6 +96,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Navigate to={auth.authenticated ? "/logs" : "/login"} replace />} />
           <Route path="/login" element={<LoginPage auth={auth} onAuthChanged={refreshAuth} />} />
+          <Route path="/status" element={protect(<StatusPage />)} />
           <Route path="/config" element={protect(<ConfigPage />)} />
           <Route path="/tuning" element={protect(<TuningPage />)} />
           <Route path="/labels" element={protect(<LabelsPage />)} />

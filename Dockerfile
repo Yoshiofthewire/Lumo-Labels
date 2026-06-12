@@ -48,4 +48,4 @@ RUN mkdir -p /lumo_lab/config /lumo_lab/logs /lumo_lab/state \
 VOLUME ["/lumo_lab/config", "/lumo_lab/logs", "/lumo_lab/state"]
 EXPOSE 5866
 
-CMD ["supervisord", "-c", "/etc/supervisord.conf"]
+CMD ["/opt/lumo-lab/scripts/entrypoint.sh"]
