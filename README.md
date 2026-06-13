@@ -131,6 +131,7 @@ Important runtime files:
 ## Auth and Setup Notes
 
 - The app uses session-based login with the `lumo_session` cookie.
+- Admin credentials in `/lumo_lab/config/admin.env` store `ADMIN_PASS_HASH` (salted scrypt hash), not a plaintext password.
 - First login is forced into the change-password flow.
 - The login page is also the change-password entry point once authenticated.
 - Runtime tuning is loaded from `TUNING.md` and the allowed label list is parsed from the `## Allowed Labels` section.

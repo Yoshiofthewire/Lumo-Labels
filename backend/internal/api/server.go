@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,8 @@ import (
 	"lumo-lab/backend/internal/health"
 	"lumo-lab/backend/internal/logging"
 	"lumo-lab/backend/internal/state"
+
+	"golang.org/x/crypto/scrypt"
 )
 
 type Server struct {
@@ -511,7 +515,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "auth config unavailable", http.StatusInternalServerError)
 		return
 	}
-	if req.Username != admin["ADMIN_USER"] || req.Password != admin["ADMIN_PASS"] {
+	if req.Username != admin["ADMIN_USER"] || !verifyAdminPassword(admin, req.Password) {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -587,15 +591,21 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mustChange := strings.EqualFold(admin["MUST_CHANGE_PASSWORD"], "true")
-	if !mustChange && req.OldPassword != admin["ADMIN_PASS"] {
+	if !mustChange && !verifyAdminPassword(admin, req.OldPassword) {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
-	if mustChange && strings.TrimSpace(req.OldPassword) != "" && req.OldPassword != admin["ADMIN_PASS"] {
+	if mustChange && strings.TrimSpace(req.OldPassword) != "" && !verifyAdminPassword(admin, req.OldPassword) {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
-	admin["ADMIN_PASS"] = req.NewPassword
+	hash, err := hashAdminPassword(req.NewPassword)
+	if err != nil {
+		http.Error(w, "failed to update password", http.StatusInternalServerError)
+		return
+	}
+	admin["ADMIN_PASS_HASH"] = hash
+	delete(admin, "ADMIN_PASS")
 	admin["MUST_CHANGE_PASSWORD"] = "false"
 	if err := writeAdminEnv(s.adminPath, admin); err != nil {
 		http.Error(w, "failed to update password", http.StatusInternalServerError)
@@ -991,8 +1001,86 @@ func readAdminEnv(path string) (map[string]string, error) {
 }
 
 func writeAdminEnv(path string, kv map[string]string) error {
-	content := fmt.Sprintf("ADMIN_USER=%s\nADMIN_PASS=%s\nMUST_CHANGE_PASSWORD=%s\n", kv["ADMIN_USER"], kv["ADMIN_PASS"], kv["MUST_CHANGE_PASSWORD"])
+	content := fmt.Sprintf("ADMIN_USER=%s\n", kv["ADMIN_USER"])
+	if hash := strings.TrimSpace(kv["ADMIN_PASS_HASH"]); hash != "" {
+		content += fmt.Sprintf("ADMIN_PASS_HASH=%s\n", hash)
+	} else {
+		content += fmt.Sprintf("ADMIN_PASS=%s\n", kv["ADMIN_PASS"])
+	}
+	content += fmt.Sprintf("MUST_CHANGE_PASSWORD=%s\n", kv["MUST_CHANGE_PASSWORD"])
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func verifyAdminPassword(admin map[string]string, candidate string) bool {
+	hash := strings.TrimSpace(admin["ADMIN_PASS_HASH"])
+	if hash != "" {
+		return verifyScryptHash(hash, candidate)
+	}
+	legacy := admin["ADMIN_PASS"]
+	if legacy == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(legacy), []byte(candidate)) == 1
+}
+
+func hashAdminPassword(password string) (string, error) {
+	const (
+		n      = 16384
+		r      = 8
+		p      = 1
+		keyLen = 32
+	)
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	hash, err := scrypt.Key([]byte(password), salt, n, r, p, keyLen)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"scrypt$%d$%d$%d$%s$%s",
+		n,
+		r,
+		p,
+		base64.StdEncoding.EncodeToString(salt),
+		base64.StdEncoding.EncodeToString(hash),
+	), nil
+}
+
+func verifyScryptHash(encoded, candidate string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[0] != "scrypt" {
+		return false
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	r, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return false
+	}
+	p, err := strconv.Atoi(parts[3])
+	if err != nil {
+		return false
+	}
+	salt, err := base64.StdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return false
+	}
+	expected, err := base64.StdEncoding.DecodeString(parts[5])
+	if err != nil {
+		return false
+	}
+	if len(expected) == 0 {
+		return false
+	}
+	derived, err := scrypt.Key([]byte(candidate), salt, n, r, p, len(expected))
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(derived, expected) == 1
 }
 
 func randomToken(size int) (string, error) {
