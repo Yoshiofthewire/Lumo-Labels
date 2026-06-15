@@ -390,9 +390,20 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 		restartRequested := false
 		nextAction := "Daemon restarted automatically to apply new Proton tokens."
 		if err := restartDaemonProcess(r.Context()); err != nil {
-			restartRequested = true
-			nextAction = "Automatic container restart requested to apply new Proton tokens."
-			scheduleContainerRestart(s.logger, "proton auth updated", 750*time.Millisecond)
+			// supervisorctl could not restart the daemon program. Rather than killing
+			// PID 1 (which takes the whole container down and depends on an external
+			// Docker restart policy to recover), signal the daemon process directly so
+			// supervisord's autorestart respawns it. Applying new Proton tokens never
+			// requires a full container restart.
+			if signalErr := signalDaemonProcessRestart(); signalErr != nil {
+				restartRequested = true
+				nextAction = "Tokens saved, but the daemon could not be restarted automatically (" + signalErr.Error() + "). It will pick up the new tokens on its next poll, or use the repair action to restart."
+				if s.logger != nil {
+					s.logger.Error("daemon restart after proton auth update failed", "supervisorctl_error", err.Error(), "signal_error", signalErr.Error())
+				}
+			} else {
+				nextAction = "Daemon signaled to restart to apply new Proton tokens."
+			}
 		}
 
 		writeJSON(w, http.StatusAccepted, map[string]any{
@@ -852,6 +863,50 @@ func restartDaemonProcess(ctx context.Context) error {
 	return fmt.Errorf("restart daemon: %s", msg)
 }
 
+// signalDaemonProcessRestart finds the running `lumo-lab --mode daemon` process
+// and sends it SIGTERM. The daemon program is configured with autorestart=true
+// in supervisord, so supervisord respawns it with the freshly written tokens.
+// This is used as a fallback when supervisorctl is unavailable, avoiding a full
+// container shutdown.
+func signalDaemonProcessRestart() error {
+	self := os.Getpid()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return fmt.Errorf("read /proc: %w", err)
+	}
+
+	signaled := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == self || pid == 1 {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		// /proc/<pid>/cmdline is NUL-separated.
+		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
+		if !strings.Contains(cmdline, "lumo-lab") {
+			continue
+		}
+		if !strings.Contains(cmdline, "--mode") || !strings.Contains(cmdline, "daemon") {
+			continue
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err == nil {
+			signaled++
+		}
+	}
+
+	if signaled == 0 {
+		return errors.New("daemon process not found")
+	}
+	return nil
+}
+
 type storageStateCookie struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
@@ -908,29 +963,42 @@ func extractProtonTokensFromStorageState(payload []byte) (string, string, string
 			if uid == "" || refresh == "" {
 				continue
 			}
-			current, ok := refreshByUID[uid]
-			if !ok || strings.EqualFold(parsed.ClientID, "WebAccount") {
-				refreshByUID[uid] = refreshData{refreshToken: refresh, clientID: strings.TrimSpace(parsed.ClientID), domain: cookie.Domain}
-				continue
+			// Each session fork (mail, account, …) has its own uid, so there is
+			// normally one REFRESH cookie per uid. Keep the first one seen and only
+			// replace it with a duplicate served from the app's own subdomain.
+			if current, ok := refreshByUID[uid]; ok {
+				if !strings.Contains(cookie.Domain, "proton.me") || strings.Contains(current.domain, "proton.me") {
+					continue
+				}
 			}
-			if strings.Contains(cookie.Domain, "account.proton.me") && !strings.Contains(current.domain, "account.proton.me") {
-				refreshByUID[uid] = refreshData{refreshToken: refresh, clientID: strings.TrimSpace(parsed.ClientID), domain: cookie.Domain}
-			}
+			refreshByUID[uid] = refreshData{refreshToken: refresh, clientID: strings.TrimSpace(parsed.ClientID), domain: cookie.Domain}
 		}
 	}
 
+	// Prefer the web-mail session fork. Its refresh token's ClientID matches the
+	// web-mail App-Version the poller sends to the Proton API, so refreshing the
+	// access token after it expires (~24h) succeeds instead of returning
+	// 422 "Invalid input" (which happens when a WebAccount refresh token is
+	// presented with a web-mail App-Version).
 	selectedUID := ""
 	selectedClientID := ""
-	for uid, refresh := range refreshByUID {
-		if _, ok := accessByUID[uid]; !ok {
-			continue
-		}
-		if selectedUID == "" || strings.EqualFold(refresh.clientID, "WebAccount") {
-			selectedUID = uid
-			selectedClientID = refresh.clientID
-			if strings.EqualFold(refresh.clientID, "WebAccount") {
-				break
+	selectPair := func(match func(refreshData) bool) bool {
+		for uid, refresh := range refreshByUID {
+			if _, ok := accessByUID[uid]; !ok {
+				continue
 			}
+			if match(refresh) {
+				selectedUID = uid
+				selectedClientID = refresh.clientID
+				return true
+			}
+		}
+		return false
+	}
+	// 1) Exact web-mail client, 2) any mail client, 3) any available pair.
+	if !selectPair(func(r refreshData) bool { return strings.EqualFold(r.clientID, "WebMail") }) {
+		if !selectPair(func(r refreshData) bool { return strings.Contains(strings.ToLower(r.clientID), "mail") }) {
+			selectPair(func(r refreshData) bool { return true })
 		}
 	}
 	if selectedUID == "" {

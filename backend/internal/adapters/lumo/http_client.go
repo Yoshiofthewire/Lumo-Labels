@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +33,8 @@ const warmupInitialDelay = 15 * time.Second
 const warmupRequestTimeout = 3 * time.Minute
 const warmupRetryDelay = 10 * time.Second
 const warmupMaxAttempts = 3
+const warmupReadinessPollInterval = 3 * time.Second
+const warmupReadySettle = 3 * time.Second
 
 type HTTPClient struct {
 	baseURL   string
@@ -217,13 +221,13 @@ func (c *HTTPClient) ensureWarm(ctx context.Context) error {
 }
 
 func (c *HTTPClient) runWarmup(ctx context.Context) error {
-	timer := time.NewTimer(warmupInitialDelay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
+	// Wait for the Lumo API to start accepting connections before sending any
+	// warmup documents. On container restart the Lumo process (Firefox via
+	// Playwright on port 3333) can take well over a minute to begin listening,
+	// during which connection attempts are refused. Treat that as "not ready
+	// yet" rather than a warmup failure.
+	if err := c.waitForLumoReady(ctx); err != nil {
+		return err
 	}
 
 	guardrail := LoadGuardrailText()
@@ -247,6 +251,68 @@ func (c *HTTPClient) runWarmup(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// waitForLumoReady blocks until the Lumo API accepts a TCP connection or the
+// context is cancelled. This absorbs the startup window where the Lumo process
+// is still launching and refuses connections, so warmup does not fail spuriously
+// with "connection refused".
+func (c *HTTPClient) waitForLumoReady(ctx context.Context) error {
+	addr := hostPortFromURL(c.baseURL)
+	if addr == "" {
+		// Could not determine an address to probe; fall back to the original
+		// fixed delay so behaviour is unchanged for unusual base URLs.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(warmupInitialDelay):
+		}
+		return nil
+	}
+
+	logged := false
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err == nil {
+			_ = conn.Close()
+			// The port is open; give the server a brief moment to finish
+			// initializing before sending the first document.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(warmupReadySettle):
+			}
+			return nil
+		}
+
+		if !logged {
+			appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP] waiting for Lumo API at %s to accept connections", addr))
+			logged = true
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("lumo not ready: %w", ctx.Err())
+		case <-time.After(warmupReadinessPollInterval):
+		}
+	}
+}
+
+// hostPortFromURL extracts a dialable host:port from a base URL, applying the
+// default port for the scheme when none is specified.
+func hostPortFromURL(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	if u.Port() != "" {
+		return u.Host
+	}
+	port := "80"
+	if strings.EqualFold(u.Scheme, "https") {
+		port = "443"
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 func (c *HTTPClient) sendWarmupDocument(ctx context.Context, name, content string) error {
