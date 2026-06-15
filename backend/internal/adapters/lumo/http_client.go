@@ -318,22 +318,29 @@ func hostPortFromURL(base string) string {
 func (c *HTTPClient) sendWarmupDocument(ctx context.Context, name, content string) error {
 	prompt := buildWarmupPrompt(name, content)
 	payload := []byte(fmt.Sprintf("{\"prompt\":%s, \"webSearch\":false}", strconv.Quote(prompt)))
-	appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] sending prompt", strings.ToUpper(name)))
+	upper := strings.ToUpper(name)
+	appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] sending prompt", upper))
 	var lastErr error
 	for attempt := 0; attempt < warmupMaxAttempts; attempt++ {
+		started := time.Now()
 		result, err := c.classifyOnceWithTimeout(ctx, payload, warmupRequestTimeout, false)
+		elapsed := time.Since(started).Round(time.Second)
 		if err == nil {
 			if !isThoughtAck(result) {
+				preview := firstLine(strings.TrimSpace(result))
 				lastErr = fmt.Errorf("lumo %s warmup failed: expected 'Thought about this' acknowledgement, got %q", name, strings.TrimSpace(result))
+				appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] attempt %d/%d unexpected response after %s: %q", upper, attempt+1, warmupMaxAttempts, elapsed, preview))
 			} else {
-				appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] acknowledged", strings.ToUpper(name)))
+				appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] acknowledged after %s", upper, elapsed))
 				return nil
 			}
 		} else {
 			lastErr = fmt.Errorf("lumo %s warmup failed: %w", name, err)
+			appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] attempt %d/%d failed after %s: %s", upper, attempt+1, warmupMaxAttempts, elapsed, err.Error()))
 		}
 
 		if attempt < warmupMaxAttempts-1 {
+			appendLumoServerLog(fmt.Sprintf("[LUMO WARMUP %s] retrying in %s", upper, warmupRetryDelay))
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -342,6 +349,18 @@ func (c *HTTPClient) sendWarmupDocument(ctx context.Context, name, content strin
 		}
 	}
 	return lastErr
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	const max = 200
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
 }
 
 func buildWarmupPrompt(name, content string) string {
