@@ -129,6 +129,8 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 			return "", fmt.Errorf("lumo model busy; restarted lumo server")
 		}
 		if strings.Contains(result, "You've reached your weekly chat limit") {
+			appendLumoErrorLog("AI credits exhausted: Lumo returned the weekly chat limit response; email classification paused until credits reset")
+			appendLumoServerLog("[CLASSIFY FAILED] AI credits exhausted (weekly chat limit reached)")
 			return "", fmt.Errorf("%s\nuser has run out of ai credits", normalized)
 		}
 		if isToolsOnlyResponse(normalized) {
