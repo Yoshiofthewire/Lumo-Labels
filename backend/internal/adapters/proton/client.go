@@ -31,17 +31,24 @@ type Client interface {
 	ApplyLabel(ctx context.Context, messageID, label string) error
 }
 
+// proactiveRefreshInterval is the minimum time between proactive token
+// refreshes. Proton refresh tokens are single-use; calling the endpoint too
+// frequently burns through the rotation chain and causes 400 errors.
+const proactiveRefreshInterval = 1 * time.Hour
+
 type APIClient struct {
-	mu          sync.Mutex
-	mgr         *protonapi.Manager
-	client      *protonapi.Client
-	labelByKey  map[string]string
-	host        string
-	versions    []string
-	versionIdx  int
-	skipRefresh bool
-	jar         http.CookieJar
-	cookieMeta  []protonCookie
+	mu            sync.Mutex
+	mgr           *protonapi.Manager
+	client        *protonapi.Client
+	labelByKey    map[string]string
+	host          string
+	versions      []string
+	versionIdx    int
+	skipRefresh   bool
+	lastRefreshAt time.Time
+	nextRefreshAt time.Time
+	jar           http.CookieJar
+	cookieMeta    []protonCookie
 }
 
 type tokenFile struct {
@@ -94,6 +101,11 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
 	c.persistRotatedCookies()
 
+	c.mu.Lock()
+	c.lastRefreshAt = time.Now()
+	c.nextRefreshAt = time.Now().Add(proactiveRefreshInterval)
+	c.mu.Unlock()
+
 	pc.AddAuthHandler(func(a protonapi.Auth) {
 		_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
 		c.persistRotatedCookies()
@@ -118,9 +130,11 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 	// blocking the entire fetch.
 	if !c.shouldSkipRefresh() {
 		if err := c.refreshClient(ctx); err != nil {
-			if isExpectedRefreshInvalidInputError(err) {
-				c.disableProactiveRefresh()
-			}
+			// Back off for one interval on any error so we do not burn through
+			// single-use Proton refresh tokens (400) or hit version mismatches (422).
+			c.mu.Lock()
+			c.nextRefreshAt = time.Now().Add(proactiveRefreshInterval)
+			c.mu.Unlock()
 			// Always rebuild from stored disk credentials rather than reusing the
 			// in-memory client – its access token may be near or past expiry, which
 			// is likely what triggered the refresh failure in the first place.
@@ -472,7 +486,10 @@ func isExpectedRefreshInvalidInputError(err error) bool {
 func (c *APIClient) shouldSkipRefresh() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.skipRefresh
+	if c.skipRefresh {
+		return true
+	}
+	return time.Now().Before(c.nextRefreshAt)
 }
 
 func (c *APIClient) disableProactiveRefresh() {
