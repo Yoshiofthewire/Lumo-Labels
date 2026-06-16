@@ -4,16 +4,14 @@ services:
     container_name: lumo-lab
     ports:
       - "5866:5866"
-    #  - "3333:3333"  #Uncomment this line to expose Lumo API
+    #  - "11434:11434"  #Uncomment to expose Ollama API
     environment:
       WEB_PORT: 5866
       TZ: ${TZ:-America/New_York}
       PROTON_API_HOST: ${PROTON_API_HOST:-}
       PROTON_AUTH_FILE: ${PROTON_AUTH_FILE:-/lumo_lab/config/proton-auth.json}
-      LUMO_API_KEY: ${LUMO_API_KEY:-}
-      LUMO_BASE_URL: ${LUMO_BASE_URL:-http://127.0.0.1:3333}
-      LUMO_LOCAL_ENABLED: ${LUMO_LOCAL_ENABLED:-true}
-      LUMO_AUTH_FILE: ${LUMO_AUTH_FILE:-/lumo_lab/config/lumo-auth.json}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://127.0.0.1:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
       TUNING_FILE: ${TUNING_FILE:-/lumo_lab/config/TUNING.md}
     volumes:
       - lumo_config:/lumo_lab/config

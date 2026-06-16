@@ -172,20 +172,20 @@ func envDurationSeconds(name string, fallback int) int {
 }
 
 func newLumoClient(cfg config.Config) lumo.Client {
-	baseURL := strings.TrimSpace(os.Getenv("LUMO_BASE_URL"))
+	baseURL := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(cfg.Lumo.BaseURL)
+		baseURL = strings.TrimSpace(os.Getenv("LUMO_BASE_URL"))
+	}
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:11434"
 	}
 	if baseURL == "" {
 		return &lumo.StubClient{}
 	}
-	apiKey := strings.TrimSpace(os.Getenv("LUMO_API_KEY"))
-	if apiKey == "" {
-		apiKey = cfg.Lumo.APIKey
-	}
-	classifyPath := strings.TrimSpace(cfg.Lumo.ClassifyPath)
+	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
+	classifyPath := strings.TrimSpace(os.Getenv("OLLAMA_GENERATE_PATH"))
 	if classifyPath == "" {
-		classifyPath = "/"
+		classifyPath = "/api/generate"
 	}
 	guardrail := lumo.LoadGuardrailText()
 	tuning := lumo.LoadTuningText()
