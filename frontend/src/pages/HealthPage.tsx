@@ -6,6 +6,8 @@ type Health = {
   unhealthyForSeconds: number;
   lastCheckUtc: string;
   failureReason: string[];
+  aiCreditsExhausted?: boolean;
+  aiCreditsExhaustedAt?: string;
 };
 
 type RunStatus = {
@@ -67,6 +69,12 @@ export function HealthPage() {
     return Number.isNaN(d.getTime()) ? health.lastCheckUtc : d.toLocaleString();
   }, [health?.lastCheckUtc]);
 
+  const creditsExhaustedAt = useMemo(() => {
+    if (!health?.aiCreditsExhaustedAt) return "";
+    const d = new Date(health.aiCreditsExhaustedAt);
+    return Number.isNaN(d.getTime()) ? health.aiCreditsExhaustedAt : d.toLocaleString();
+  }, [health?.aiCreditsExhaustedAt]);
+
   return (
     <section className="panel">
       <div className="health-head">
@@ -95,6 +103,17 @@ export function HealthPage() {
             <strong>{health.healthy ? "System Healthy" : "System Unhealthy"}</strong>
             <span>Last checked: {lastChecked}</span>
           </div>
+
+          {health.aiCreditsExhausted && (
+            <div className="health-banner health-bad" style={{ marginTop: 10 }}>
+              <strong>Lumo AI credits exhausted</strong>
+              <span>
+                Email classification is paused until Lumo credits reset
+                {creditsExhaustedAt ? ` (since ${creditsExhaustedAt})` : ""}. It resumes automatically
+                on the next successful classification.
+              </span>
+            </div>
+          )}
 
           <div className="health-grid">
             <article className="health-card">

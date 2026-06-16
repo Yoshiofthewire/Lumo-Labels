@@ -235,8 +235,13 @@ func (p *Poller) handleMessage(ctx context.Context, msg proton.Message) error {
 
 	label, err := classifyWithRetry(ctx, p.lumo, p.cfg.Labels.Allowlist, msg.Sender, msg.Subject, bodyWithContext)
 	if err != nil {
+		if isAICreditsExhaustedError(err) {
+			p.flagAICreditsExhausted()
+		}
 		return err
 	}
+	// A successful classification means Lumo has credits again; clear any flag.
+	p.clearAICreditsExhausted()
 	selected := lumo.SelectLabelFromText(p.cfg.Labels.Allowlist, label)
 	if selected == "" {
 		_ = p.store.AddDecision(state.Decision{
@@ -297,7 +302,52 @@ func isPermanentLumoClassifyError(err error) bool {
 	if strings.Contains(msg, "invalid input") || strings.Contains(msg, "unprocessable") {
 		return true
 	}
+	// Out of AI credits will not recover on retry; stop hammering Lumo.
+	if isAICreditsExhaustedError(err) {
+		return true
+	}
 	return false
+}
+
+// isAICreditsExhaustedError reports whether a classify error is Lumo signalling
+// that the weekly chat limit / AI credits have been exhausted.
+func isAICreditsExhaustedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "out of ai credits") ||
+		strings.Contains(msg, "weekly chat limit")
+}
+
+// flagAICreditsExhausted persists the AI-credits flag, mirrors it onto the
+// health status, and logs once on the false->true transition.
+func (p *Poller) flagAICreditsExhausted() {
+	now := time.Now().UTC().Format(time.RFC3339)
+	newly, err := p.store.SetAICreditsExhausted(now)
+	if err != nil {
+		p.log.Error("failed to persist ai credits exhausted flag", "error", err.Error())
+	}
+	p.health.SetAICreditsExhausted(now)
+	if newly {
+		p.log.Error("Lumo AI credits exhausted; email classification paused until credits reset",
+			"detail", "Lumo returned the weekly chat limit response")
+	}
+}
+
+// clearAICreditsExhausted resets the AI-credits flag after a successful classify.
+func (p *Poller) clearAICreditsExhausted() {
+	if exhausted, _ := p.store.AICreditsExhausted(); !exhausted {
+		return
+	}
+	cleared, err := p.store.ClearAICreditsExhausted()
+	if err != nil {
+		p.log.Error("failed to clear ai credits exhausted flag", "error", err.Error())
+	}
+	p.health.ClearAICreditsExhausted()
+	if cleared {
+		p.log.Info("Lumo AI credits restored; email classification resumed")
+	}
 }
 
 func applyLabelWithRetry(ctx context.Context, c proton.Client, messageID, label string) error {

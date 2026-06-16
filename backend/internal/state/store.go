@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +18,9 @@ type Store struct {
 	checkpoint   string
 	processedSet map[string]time.Time
 	decisions    []Decision
+
+	aiCreditsExhausted   bool
+	aiCreditsExhaustedAt string
 }
 
 type Decision struct {
@@ -30,8 +34,10 @@ type Decision struct {
 }
 
 type stateFile struct {
-	LastCheckpoint string            `json:"lastCheckpoint"`
-	Processed      map[string]string `json:"processed"`
+	LastCheckpoint       string            `json:"lastCheckpoint"`
+	Processed            map[string]string `json:"processed"`
+	AICreditsExhausted   bool              `json:"aiCreditsExhausted,omitempty"`
+	AICreditsExhaustedAt string            `json:"aiCreditsExhaustedAt,omitempty"`
 }
 
 func New(baseDir string) (*Store, error) {
@@ -69,6 +75,8 @@ func (s *Store) load() error {
 		return err
 	}
 	s.checkpoint = sf.LastCheckpoint
+	s.aiCreditsExhausted = sf.AICreditsExhausted
+	s.aiCreditsExhaustedAt = sf.AICreditsExhaustedAt
 	for id, ts := range sf.Processed {
 		t, err := time.Parse(time.RFC3339, ts)
 		if err != nil {
@@ -161,7 +169,12 @@ func (s *Store) persistLocked() error {
 	for id, ts := range s.processedSet {
 		processed[id] = ts.Format(time.RFC3339)
 	}
-	b, err := json.MarshalIndent(stateFile{LastCheckpoint: s.checkpoint, Processed: processed}, "", "  ")
+	b, err := json.MarshalIndent(stateFile{
+		LastCheckpoint:       s.checkpoint,
+		Processed:            processed,
+		AICreditsExhausted:   s.aiCreditsExhausted,
+		AICreditsExhaustedAt: s.aiCreditsExhaustedAt,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -169,6 +182,45 @@ func (s *Store) persistLocked() error {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil
+}
+
+// SetAICreditsExhausted marks that Lumo reported the weekly chat limit / out of
+// AI credits. It returns true only on the false->true transition so callers can
+// notify exactly once until the flag is reset. The flag is persisted so it
+// survives a restart.
+func (s *Store) SetAICreditsExhausted(atUTC string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.aiCreditsExhausted {
+		return false, nil
+	}
+	if strings.TrimSpace(atUTC) == "" {
+		atUTC = time.Now().UTC().Format(time.RFC3339)
+	}
+	s.aiCreditsExhausted = true
+	s.aiCreditsExhaustedAt = atUTC
+	return true, s.persistLocked()
+}
+
+// ClearAICreditsExhausted resets the AI-credits flag. It returns true only when
+// the flag was previously set (true->false transition).
+func (s *Store) ClearAICreditsExhausted() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.aiCreditsExhausted {
+		return false, nil
+	}
+	s.aiCreditsExhausted = false
+	s.aiCreditsExhaustedAt = ""
+	return true, s.persistLocked()
+}
+
+// AICreditsExhausted reports whether the AI-credits flag is set and when it was
+// first raised.
+func (s *Store) AICreditsExhausted() (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.aiCreditsExhausted, s.aiCreditsExhaustedAt
 }
 
 func (s *Store) loadDecisions() error {

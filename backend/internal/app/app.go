@@ -105,6 +105,11 @@ func runServer(cfg config.Config, logger *logging.Logger, store *state.Store, he
 }
 
 func runAll(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service) error {
+	// Restore the sticky AI-credits flag onto the health status so a restart
+	// keeps surfacing it until a successful classify clears it.
+	if exhausted, at := store.AICreditsExhausted(); exhausted {
+		healthSvc.SetAICreditsExhausted(at)
+	}
 	protonClient := newProtonClient()
 	srv := api.NewServer(cfg, logger, store, healthSvc, protonClient)
 	lumoClient := newLumoClient(cfg)
