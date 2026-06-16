@@ -343,7 +343,7 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "auth file is empty", http.StatusBadRequest)
 			return
 		}
-		uid, access, refresh, clientID, err := extractProtonTokensFromStorageState(payload)
+		uid, access, refresh, clientID, cookies, err := extractProtonTokensFromStorageState(payload)
 		if err != nil {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error()})
 			return
@@ -359,6 +359,7 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"refreshToken": refresh,
 			"source":       "lumo-storage-state",
 			"clientID":     clientID,
+			"cookies":      cookies,
 			"updatedAt":    time.Now().UTC().Format(time.RFC3339),
 		}, "", "  ")
 		if err != nil {
@@ -911,10 +912,22 @@ type storageStateCookie struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
 	Domain string `json:"domain"`
+	Path   string `json:"path"`
 }
 
 type storageState struct {
 	Cookies []storageStateCookie `json:"cookies"`
+}
+
+// protonCookie is the persisted representation of a Proton web-session cookie.
+// These cookies (Session-Id, AUTH-<uid>, REFRESH-<uid>) are required to refresh
+// a cookie-auth web session via /auth/v4/refresh; without them Proton rejects
+// the refresh with 422 "Invalid input" once the bearer access token expires.
+type protonCookie struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Domain string `json:"domain"`
+	Path   string `json:"path"`
 }
 
 type refreshCookiePayload struct {
@@ -923,13 +936,13 @@ type refreshCookiePayload struct {
 	UID          string `json:"UID"`
 }
 
-func extractProtonTokensFromStorageState(payload []byte) (string, string, string, string, error) {
+func extractProtonTokensFromStorageState(payload []byte) (string, string, string, string, []protonCookie, error) {
 	var state storageState
 	if err := json.Unmarshal(payload, &state); err != nil {
-		return "", "", "", "", errors.New("storageState auth file is not valid json")
+		return "", "", "", "", nil, errors.New("storageState auth file is not valid json")
 	}
 	if len(state.Cookies) == 0 {
-		return "", "", "", "", errors.New("storageState auth file has no cookies")
+		return "", "", "", "", nil, errors.New("storageState auth file has no cookies")
 	}
 
 	type refreshData struct {
@@ -940,7 +953,19 @@ func extractProtonTokensFromStorageState(payload []byte) (string, string, string
 	accessByUID := map[string]string{}
 	refreshByUID := map[string]refreshData{}
 
+	// Collect every proton.me cookie so the daemon can rebuild the full web
+	// session context (Session-Id + AUTH/REFRESH forks) when refreshing tokens.
+	sessionCookies := make([]protonCookie, 0, len(state.Cookies))
+
 	for _, cookie := range state.Cookies {
+		if strings.Contains(cookie.Domain, "proton.me") && strings.TrimSpace(cookie.Value) != "" {
+			sessionCookies = append(sessionCookies, protonCookie{
+				Name:   cookie.Name,
+				Value:  cookie.Value,
+				Domain: cookie.Domain,
+				Path:   cookie.Path,
+			})
+		}
 		if strings.HasPrefix(cookie.Name, "AUTH-") {
 			uid := strings.TrimPrefix(cookie.Name, "AUTH-")
 			if strings.TrimSpace(uid) != "" && strings.TrimSpace(cookie.Value) != "" {
@@ -1002,14 +1027,14 @@ func extractProtonTokensFromStorageState(payload []byte) (string, string, string
 		}
 	}
 	if selectedUID == "" {
-		return "", "", "", "", errors.New("could not extract matching AUTH/REFRESH token pair from storageState cookies")
+		return "", "", "", "", nil, errors.New("could not extract matching AUTH/REFRESH token pair from storageState cookies")
 	}
 	refresh := refreshByUID[selectedUID].refreshToken
 	access := accessByUID[selectedUID]
 	if strings.TrimSpace(refresh) == "" || strings.TrimSpace(access) == "" {
-		return "", "", "", "", errors.New("extracted proton token pair is incomplete")
+		return "", "", "", "", nil, errors.New("extracted proton token pair is incomplete")
 	}
-	return selectedUID, access, refresh, selectedClientID, nil
+	return selectedUID, access, refresh, selectedClientID, sessionCookies, nil
 }
 
 func readProtonTokenFile(path string) (string, string, string, error) {

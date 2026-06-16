@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -37,12 +40,25 @@ type APIClient struct {
 	versions    []string
 	versionIdx  int
 	skipRefresh bool
+	jar         http.CookieJar
+	cookieMeta  []protonCookie
 }
 
 type tokenFile struct {
 	UID          string `json:"uid"`
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
+}
+
+// protonCookie mirrors the persisted web-session cookies (Session-Id,
+// AUTH-<uid>, REFRESH-<uid>). They are replayed into a cookie jar so that
+// /auth/v4/refresh succeeds for cookie-auth web sessions; a body-only refresh
+// token without these cookies is rejected by Proton with 422 "Invalid input".
+type protonCookie struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Domain string `json:"domain"`
+	Path   string `json:"path"`
 }
 
 func NewAPIClientFromEnv() *APIClient {
@@ -54,7 +70,9 @@ func NewAPIClientFromEnv() *APIClient {
 		versionIdx: 0,
 		labelByKey: map[string]string{},
 	}
-	client.mgr = newManager(host, client.currentVersion())
+	client.cookieMeta = loadProtonCookies()
+	client.jar = buildCookieJar(client.cookieMeta)
+	client.mgr = newManager(host, client.currentVersion(), client.jar)
 	return client
 }
 
@@ -74,9 +92,11 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 
 	// Persist the freshly issued tokens immediately.
 	_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
+	c.persistRotatedCookies()
 
 	pc.AddAuthHandler(func(a protonapi.Auth) {
 		_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
+		c.persistRotatedCookies()
 	})
 	pc.AddDeauthHandler(func() {
 		c.mu.Lock()
@@ -112,6 +132,7 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 				pc := c.mgr.NewClient(uid, acc, ref)
 				pc.AddAuthHandler(func(a protonapi.Auth) {
 					_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
+					c.persistRotatedCookies()
 				})
 				pc.AddDeauthHandler(func() {
 					c.mu.Lock()
@@ -279,7 +300,7 @@ func protonAppVersionsFromEnv() []string {
 	return out
 }
 
-func newManager(host, appVersion string) *protonapi.Manager {
+func newManager(host, appVersion string, jar http.CookieJar) *protonapi.Manager {
 	opts := []protonapi.Option{}
 	if strings.TrimSpace(appVersion) != "" {
 		opts = append(opts, protonapi.WithAppVersion(strings.TrimSpace(appVersion)))
@@ -287,7 +308,131 @@ func newManager(host, appVersion string) *protonapi.Manager {
 	if strings.TrimSpace(host) != "" {
 		opts = append(opts, protonapi.WithHostURL(strings.TrimSpace(host)))
 	}
+	if jar != nil {
+		opts = append(opts, protonapi.WithCookieJar(jar))
+	}
 	return protonapi.New(opts...)
+}
+
+// loadProtonCookies reads the persisted web-session cookies from the proton auth
+// file. Returns nil when the file has no cookies (older auth uploads), in which
+// case the manager runs without a cookie jar exactly as before.
+func loadProtonCookies() []protonCookie {
+	b, err := os.ReadFile(tokenFilePath())
+	if err != nil {
+		return nil
+	}
+	var parsed struct {
+		Cookies []protonCookie `json:"cookies"`
+	}
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		return nil
+	}
+	return parsed.Cookies
+}
+
+// buildCookieJar seeds an in-memory cookie jar with the persisted Proton
+// web-session cookies. Cookie paths are normalized to "/" so they are always
+// sent to the refresh endpoint (the original REFRESH cookie path is scoped to
+// /api/auth/refresh, which would otherwise exclude it from /api/auth/v4/refresh).
+// The jar is updated automatically by Set-Cookie responses as tokens rotate.
+func buildCookieJar(cookies []protonCookie) http.CookieJar {
+	valid := make([]protonCookie, 0, len(cookies))
+	for _, c := range cookies {
+		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Value) == "" || strings.TrimSpace(c.Domain) == "" {
+			continue
+		}
+		valid = append(valid, c)
+	}
+	if len(valid) == 0 {
+		return nil
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil
+	}
+
+	byHost := map[string][]*http.Cookie{}
+	for _, c := range valid {
+		host := strings.TrimPrefix(c.Domain, ".")
+		byHost[host] = append(byHost[host], &http.Cookie{
+			Name:   c.Name,
+			Value:  c.Value,
+			Domain: c.Domain,
+			Path:   "/",
+		})
+	}
+	for host, hc := range byHost {
+		u := &url.URL{Scheme: "https", Host: host, Path: "/"}
+		jar.SetCookies(u, hc)
+	}
+	return jar
+}
+
+// persistRotatedCookies snapshots the jar's current cookie values (refreshed by
+// Set-Cookie responses as tokens rotate) and writes them back to the auth file
+// so a daemon restart resumes with valid session cookies rather than the stale
+// originals from the last upload.
+func (c *APIClient) persistRotatedCookies() {
+	c.mu.Lock()
+	jar := c.jar
+	meta := c.cookieMeta
+	if jar == nil || len(meta) == 0 {
+		c.mu.Unlock()
+		return
+	}
+
+	latest := map[string]string{}
+	hosts := map[string]bool{}
+	for _, m := range meta {
+		hosts[strings.TrimPrefix(m.Domain, ".")] = true
+	}
+	for host := range hosts {
+		u := &url.URL{Scheme: "https", Host: host, Path: "/"}
+		for _, ck := range jar.Cookies(u) {
+			latest[ck.Name] = ck.Value
+		}
+	}
+
+	updated := make([]protonCookie, 0, len(meta))
+	changed := false
+	for _, m := range meta {
+		if v, ok := latest[m.Name]; ok && v != "" && v != m.Value {
+			m.Value = v
+			changed = true
+		}
+		updated = append(updated, m)
+	}
+	if !changed {
+		c.mu.Unlock()
+		return
+	}
+	c.cookieMeta = updated
+	c.mu.Unlock()
+
+	_ = writeCookieFile(updated)
+}
+
+func writeCookieFile(cookies []protonCookie) error {
+	path := tokenFilePath()
+
+	existing := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &existing)
+	}
+	existing["cookies"] = cookies
+	existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+
+	b, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func isOutOfDateError(err error) bool {
@@ -361,7 +506,7 @@ func (c *APIClient) rotateVersionOnOutOfDate(err error) bool {
 	}
 
 	c.versionIdx++
-	c.mgr = newManager(c.host, c.versions[c.versionIdx])
+	c.mgr = newManager(c.host, c.versions[c.versionIdx], c.jar)
 	c.client = nil
 	c.labelByKey = map[string]string{}
 	return true
@@ -426,6 +571,7 @@ func (c *APIClient) ensureClient(ctx context.Context) (*protonapi.Client, error)
 		// Persist refreshed tokens to disk so a restart always has valid credentials.
 		pc.AddAuthHandler(func(auth protonapi.Auth) {
 			_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
+			c.persistRotatedCookies()
 		})
 		// Clear the cached client on de-auth (422) so ensureClient re-reads the
 		// token file on the next poll rather than permanently returning a dead client.
