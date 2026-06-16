@@ -1,6 +1,6 @@
-<img src="./lumolabel.png" alt="Lumo Labels" />
+<img src="./llamalabel.png" alt="Lumo Labels" />
 
-# Lumo Labels
+# llama Labels
 
 Lumo Labels is a Dockerized Proton Mail auto-labeler.
 
