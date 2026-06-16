@@ -36,6 +36,20 @@ const warmupMaxAttempts = 3
 const warmupReadinessPollInterval = 3 * time.Second
 const warmupReadySettle = 3 * time.Second
 
+// Classify pacing/serialization. The Lumo model handles one generation at a
+// time; firing concurrent or back-to-back requests triggers "Model busy" and
+// empty-message responses. These constants serialize and space out calls.
+const (
+	// classifyPaceInterval is the minimum gap enforced between the end of one
+	// classify request and the start of the next.
+	classifyPaceInterval = 3 * time.Second
+	// classifyFirstBackoff is the short backoff used before the first retry of a
+	// transient (empty-message / tools-only) response.
+	classifyFirstBackoff = 2 * time.Second
+	// classifyRetryBackoff is the backoff used for retries after the first.
+	classifyRetryBackoff = 5 * time.Second
+)
+
 type HTTPClient struct {
 	baseURL   string
 	apiKey    string
@@ -43,6 +57,14 @@ type HTTPClient struct {
 	guardrail string
 	tuning    string
 	client    *http.Client
+
+	// classifyMu serializes classify requests so only one generation hits the
+	// Lumo model at a time. It is held for the full duration of a Classify call
+	// (including retries and pacing waits).
+	classifyMu sync.Mutex
+	// lastClassify records when the most recent classify request finished; it is
+	// guarded by classifyMu and used to pace consecutive calls.
+	lastClassify time.Time
 }
 
 func (c *HTTPClient) Warmup(ctx context.Context) error {
@@ -75,6 +97,19 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 		return "", err
 	}
 
+	// Serialize: only one classify generation may hit the Lumo model at a time.
+	// The lock is held across retries and pacing so concurrent callers (the
+	// poller and the /api test-classify endpoint) queue instead of overlapping.
+	c.classifyMu.Lock()
+	defer c.classifyMu.Unlock()
+
+	// Pace: enforce a minimum gap since the previous classify finished so the
+	// model is not hammered back-to-back.
+	if err := c.paceClassify(ctx); err != nil {
+		return "", err
+	}
+	defer func() { c.lastClassify = time.Now() }()
+
 	appendLumoServerLog(fmt.Sprintf("[CLASSIFY] From: %s | Subject: [%s]", sender, subject))
 
 	prompt := buildRuntimePrompt(allowedLabels, sender, subject, body)
@@ -99,7 +134,9 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 		if isToolsOnlyResponse(normalized) {
 			appendLumoServerLog(fmt.Sprintf("[CLASSIFY RETRY] tools-only response on attempt %d/%d, waiting before retry", attempt+1, 3))
 			if attempt < 2 {
-				time.Sleep(15 * time.Second)
+				if err := sleepWithContext(ctx, classifyRetryDelay(attempt, 15*time.Second)); err != nil {
+					return "", err
+				}
 				continue
 			}
 			appendLumoServerLog("[CLASSIFY FAILED] tools-only response exhausted all inner retries")
@@ -108,7 +145,9 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 		if hasEmptyMessageNoise(normalized) {
 			appendLumoServerLog(fmt.Sprintf("[CLASSIFY RETRY] empty-message noise on attempt %d/%d, waiting before retry", attempt+1, 3))
 			if attempt < 2 {
-				time.Sleep(5 * time.Second)
+				if err := sleepWithContext(ctx, classifyRetryDelay(attempt, classifyRetryBackoff)); err != nil {
+					return "", err
+				}
 				continue
 			}
 			appendLumoServerLog("[CLASSIFY FAILED] empty-message noise exhausted all inner retries")
@@ -138,6 +177,47 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 	}
 
 	return "", fmt.Errorf("lumo classify retry limit reached")
+}
+
+// paceClassify blocks until classifyPaceInterval has elapsed since the previous
+// classify request finished, so consecutive calls are spaced out. It must be
+// called while holding classifyMu. Returns the context error if cancelled while
+// waiting.
+func (c *HTTPClient) paceClassify(ctx context.Context) error {
+	if classifyPaceInterval <= 0 || c.lastClassify.IsZero() {
+		return nil
+	}
+	wait := classifyPaceInterval - time.Since(c.lastClassify)
+	if wait <= 0 {
+		return nil
+	}
+	return sleepWithContext(ctx, wait)
+}
+
+// classifyRetryDelay returns the backoff before a retry. The first retry uses a
+// short backoff so a single transient response recovers quickly; later retries
+// use the supplied (longer) delay.
+func classifyRetryDelay(attempt int, subsequent time.Duration) time.Duration {
+	if attempt == 0 {
+		return classifyFirstBackoff
+	}
+	return subsequent
+}
+
+// sleepWithContext sleeps for d unless the context is cancelled first, in which
+// case it returns the context error.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func buildRuntimePrompt(allowedLabels []string, sender, subject, body string) string {
