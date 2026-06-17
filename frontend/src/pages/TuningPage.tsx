@@ -20,6 +20,33 @@ type TuningSaveResponse = {
 
 const DEFAULT_LABELS = ["Questionable", "Primary", "Updates", "Social", "Promotions"];
 
+const EXAMPLE_SENDER_GROUPS = [
+  {
+    title: "Retail and E-Commerce",
+    senders: ["promo@retailbrand.com", "deals@brandname.com", "offers@storename.com", "rewards@brand.com", "flashsales@retailer.com"]
+  },
+  {
+    title: "Travel and Hospitality",
+    senders: ["traveldeals@airline.com", "specialoffers@booking-site.com", "discounts@hotel.com", "getaway@travelbrand.com"]
+  },
+  {
+    title: "Services and Subscriptions",
+    senders: ["newsletter@servicebrand.com", "hello@appname.com", "exclusive@brand.com", "team@software.com"]
+  },
+  {
+    title: "Meta Platforms (Instagram, Facebook, Threads)",
+    senders: ["notification@facebookmail.com", "update@facebookmail.com", "security@facebookmail.com", "no-reply@instagram.com", "digest@instagram.com"]
+  },
+  {
+    title: "Professional and Career (LinkedIn)",
+    senders: ["messages-noreply@linkedin.com", "notifications-noreply@linkedin.com", "invitations@linkedin.com", "news@linkedin.com"]
+  },
+  {
+    title: "Microblogging and Community (X/Twitter, Reddit)",
+    senders: ["info@x.com", "notify@x.com", "noreply@redditmail.com"]
+  }
+] as const;
+
 function normalizeOrderedLabels(labels: string[]): string[] {
   const clean = labels.filter(Boolean);
   const unique = Array.from(new Set(clean));
@@ -134,9 +161,9 @@ function parseDefinitions(content: string): Record<string, string> {
 function buildTuningTemplate(labels: string[], defs: Record<string, string>): string {
   const ordered = labels.filter(Boolean);
   const lines: string[] = [];
-  lines.push("# Lumo Labeling Instructions");
+  lines.push("# llama Labeling Instructions");
   lines.push("");
-  lines.push("You are Lumo. Use this document as the source of truth for assigning inbox labels.");
+  lines.push("You are llama. Use this document as the source of truth for assigning inbox labels.");
   lines.push("");
   lines.push("## Allowed Labels");
   lines.push("");
@@ -148,7 +175,7 @@ function buildTuningTemplate(labels: string[], defs: Record<string, string>): st
   lines.push("1. Assign exactly one label per message.");
   lines.push("2. Prefer sender intent and message purpose over isolated keywords.");
   lines.push("3. If a message could fit multiple labels, use this priority order:");
-  for (const label of ordered) lines.push(`\t - ${label}`);
+  for (const label of ordered) lines.push(`   - ${label}`);
   lines.push("4. If confidence is low, choose the most conservative non-promotional label.");
   lines.push("5. Return only the label string, exactly matching one of the allowed labels.");
   lines.push("");
@@ -160,13 +187,23 @@ function buildTuningTemplate(labels: string[], defs: Record<string, string>): st
     if (definition) {
       for (const row of definition.split(/\r?\n/)) {
         const clean = row.replace(/^[-*]\s*/, "").trim();
-        if (clean) lines.push(`\t- ${clean}`);
+        if (clean) lines.push(`   - ${clean}`);
       }
     } else {
-      lines.push("\t- Add guidance for this label.");
+      lines.push("   - Add guidance for this label.");
     }
   }
   lines.push("");
+  lines.push("## Example Email Senders");
+  lines.push("");
+  for (const group of EXAMPLE_SENDER_GROUPS) {
+    lines.push(`- ${group.title}:`);
+    lines.push("");
+    for (const sender of group.senders) {
+      lines.push(sender);
+    }
+    lines.push("");
+  }
   lines.push("## User Tuning Notes");
   lines.push("");
   lines.push("The user may edit this file at any time. Always apply the latest version when labeling new messages.");
@@ -262,8 +299,8 @@ export function TuningPage() {
 
   return (
     <section className="panel">
-      <h2>Tuning Instructions</h2>
-      <p>Edit TUNING.md content sent after GARDRAIL.md and before email content.</p>
+      <h2>llama Tuning Instructions</h2>
+      <p>Edit the markdown used by the model after GARDRAIL.md and before email content.</p>
 
       <h3>Proton Labels</h3>
       <button type="button" onClick={syncLabels}>Sync Labels from Proton</button>
@@ -297,6 +334,18 @@ export function TuningPage() {
             disabled={label.toLowerCase() === "questionable"}
             style={{ width: "100%" }}
           />
+        </div>
+      ))}
+
+      <h3>Example Email Senders</h3>
+      {EXAMPLE_SENDER_GROUPS.map((group) => (
+        <div key={group.title} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 8, marginBottom: 8 }}>
+          <strong>{group.title}</strong>
+          <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+            {group.senders.map((sender) => (
+              <li key={sender}>{sender}</li>
+            ))}
+          </ul>
         </div>
       ))}
 
