@@ -1,10 +1,10 @@
 :root {
-  --bg: #f3e7d3;
-  --panel: #ead7bd;
-  --ink: #3b2b1c;
-  --accent: #b78552;
-  --accent-soft: #d6b48a;
-  --line: #c9a77f;
+  --bg: #2a1d17;
+  --panel: #3a2a22;
+  --ink: #f2e4d3;
+  --accent: #b97a4a;
+  --accent-soft: #6a4732;
+  --line: #8e6144;
   --mono: "IBM Plex Mono", monospace;
   --sans: "Space Grotesk", sans-serif;
 }
@@ -17,7 +17,7 @@ body {
   margin: 0;
   font-family: var(--sans);
   color: var(--ink);
-  background: radial-gradient(circle at top right, #dcc3a3, transparent 45%), var(--bg);
+  background: radial-gradient(circle at top right, #6a4732, transparent 45%), var(--bg);
 }
 
 .shell {
@@ -29,7 +29,7 @@ body {
 .sidebar {
   border-right: 1px solid var(--line);
   padding: 20px;
-  background: linear-gradient(180deg, #e1c6a2, #f3e7d3);
+  background: linear-gradient(180deg, #4a3328, #2a1d17);
   display: flex;
   flex-direction: column;
 }
@@ -71,7 +71,7 @@ body {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(183, 133, 82, 0.2);
+  background: rgba(106, 71, 50, 0.34);
 }
 
 .session-meta p {
@@ -103,7 +103,7 @@ body {
   border-radius: 14px;
   padding: 18px;
   margin-bottom: 18px;
-  box-shadow: 0 8px 30px rgba(59, 43, 28, 0.18);
+  box-shadow: 0 10px 32px rgba(14, 9, 7, 0.42);
 }
 
 .auth-form {
@@ -236,7 +236,7 @@ pre {
 .health-card {
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(243, 231, 211, 0.65);
+  background: rgba(56, 39, 30, 0.82);
   padding: 12px;
 }
 

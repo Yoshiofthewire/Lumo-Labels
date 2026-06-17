@@ -240,9 +240,6 @@ export function ConfigPage() {
   const [allLabels, setAllLabels] = useState<string[]>([]);
   const [orderedLabels, setOrderedLabels] = useState<string[]>([]);
   const [labelDefinitions, setLabelDefinitions] = useState<Record<string, string>>({});
-  const [lumoAuth, setLumoAuth] = useState<LumoAuthStatus | null>(null);
-  const [lumoAuthStatus, setLumoAuthStatus] = useState("");
-  const [lumoAuthTone, setLumoAuthTone] = useState<LumoAuthNoticeTone>("idle");
   const [protonAuth, setProtonAuth] = useState<ProtonAuthStatus | null>(null);
   const [protonAuthFile, setProtonAuthFile] = useState<File | null>(null);
   const [protonAuthStatus, setProtonAuthStatus] = useState("");
@@ -273,16 +270,6 @@ export function ConfigPage() {
     }
   }
 
-  async function loadLumoAuthStatus() {
-    try {
-      const status = await getJSON<LumoAuthStatus>("/api/lumo/auth");
-      setLumoAuth(status);
-    } catch {
-      setLumoAuthTone("error");
-      setLumoAuthStatus("Failed to load Lumo auth status.");
-    }
-  }
-
   async function loadProtonAuthStatus() {
     try {
       const status = await getJSON<ProtonAuthStatus>("/api/proton/auth");
@@ -304,17 +291,15 @@ export function ConfigPage() {
       getJSON<AppConfig>("/api/config"),
       getJSON<LabelsResponse>("/api/labels"),
 	      getJSON<TuningResponse>("/api/tuning"),
-	      getJSON<LumoAuthStatus>("/api/lumo/auth"),
 	      getJSON<ProtonAuthStatus>("/api/proton/auth")
     ])
-      .then(([data, labelsData, tuningData, lumoAuthData, protonAuthData]) => {
+        .then(([data, labelsData, tuningData, protonAuthData]) => {
         setCfg(data);
         const all = Array.from(new Set([...(labelsData.proton ?? []), ...(labelsData.configured ?? [])])).filter(Boolean);
         setAllLabels(all);
         const content = tuningData.content ?? "";
         setTuningText(content);
         hydrateFromTuning(content, all);
-        setLumoAuth(lumoAuthData);
         setProtonAuth(protonAuthData);
       })
       .catch(() => setStatus("Failed to load config. Please login first."));
@@ -439,19 +424,6 @@ export function ConfigPage() {
     <section className="panel">
       <h2>Configuration</h2>
       <p>Manage authentication, tuning, and connectivity checks.</p>
-
-      <hr />
-      <h3>Lumo Authentication</h3>
-      {lumoAuth ? (
-        <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, marginTop: 10, marginBottom: 10 }}>
-          <p>Local Lumo Enabled: {lumoAuth.localEnabled ? "Yes" : "No"}</p>
-          <p>Auth File Present: {lumoAuth.exists ? "Yes" : "No"}</p>
-          <p>Auth File Path: {lumoAuth.path}</p>
-          {lumoAuth.exists ? <p>Size: {lumoAuth.size ?? 0} bytes</p> : null}
-          {lumoAuth.modifiedAt ? <p>Updated: {lumoAuth.modifiedAt}</p> : null}
-        </div>
-      ) : null}
-      {lumoAuthStatus ? <p className={`notice notice-${lumoAuthTone}`}>{lumoAuthStatus}</p> : null}
 
       <hr />
       <h3>Proton Authentication</h3>
