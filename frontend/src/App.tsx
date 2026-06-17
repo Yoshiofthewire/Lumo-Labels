@@ -71,7 +71,7 @@ export function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <img src="/lumolabel.png" alt="Lumo Labels" style={{ width: "100%", maxWidth: 180, display: "block", margin: "0 auto 0.75rem" }} />
+          <img src="/llamalabel.png" alt="Llama Labels" style={{ width: "100%", maxWidth: 180, display: "block", margin: "0 auto 0.75rem" }} />
         </div>
         {auth.authenticated ? (
           <div className="session-meta">

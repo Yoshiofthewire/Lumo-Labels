@@ -248,7 +248,7 @@ func (c *APIClient) listUnreadInboxOnce(ctx context.Context, sinceCheckpoint str
 				}
 				msg.Body = htmlToText(decrypted)
 			} else {
-				// Without a configured private key, avoid sending raw ciphertext to Lumo.
+				// Without a configured private key, avoid sending raw ciphertext to Llama.
 				msg.Body = ""
 			}
 		}
@@ -617,7 +617,7 @@ func tokenFilePath() string {
 	if path := strings.TrimSpace(os.Getenv("PROTON_AUTH_FILE")); path != "" {
 		return path
 	}
-	return "/lumo_lab/config/proton-auth.json"
+	return "/llama_lab/config/proton-auth.json"
 }
 
 func readTokenFile() (string, string, string, error) {
@@ -824,7 +824,7 @@ func secretDirPath() string {
 	if path := strings.TrimSpace(os.Getenv("SECRET_DIR")); path != "" {
 		return path
 	}
-	return "/lumo_lab/private"
+	return "/llama_lab/private"
 }
 
 func htmlToText(input string) string {

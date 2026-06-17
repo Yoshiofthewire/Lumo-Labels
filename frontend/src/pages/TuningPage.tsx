@@ -22,8 +22,8 @@ export function TuningPage() {
       const result = await putJSON<TuningSaveResponse>("/api/tuning", { content: tuningText });
       setTuningStatus(
         result.restartOk === false
-          ? `Tuning saved, but Lumo restart needs attention: ${result.restartError ?? "unknown restart failure"}`
-          : "TUNING.md saved and Lumo restarted."
+          ? `Tuning saved, but Llama restart needs attention: ${result.restartError ?? "unknown restart failure"}`
+          : "TUNING.md saved and Llama restarted."
       );
     } catch {
       setTuningStatus("Failed to save tuning file.");

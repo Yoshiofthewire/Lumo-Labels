@@ -28,12 +28,12 @@ backend/.cache/
 scripts/node_modules/
 
 # Local runtime artifacts
-lumo_lab/
+llama_lab/
 *.pid
 
 # Auth and secret artifacts
 **/auth.json
 **/*_auth.json
-**/lumo-auth.json
+**/llama-auth.json
 **/proton-auth.json
 **/admin.env

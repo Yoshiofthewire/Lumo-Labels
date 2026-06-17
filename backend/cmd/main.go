@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"lumo-lab/backend/internal/app"
+	"llama-lab/backend/internal/app"
 )
 
 func main() {

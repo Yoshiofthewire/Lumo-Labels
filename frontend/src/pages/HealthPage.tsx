@@ -106,9 +106,9 @@ export function HealthPage() {
 
           {health.aiCreditsExhausted && (
             <div className="health-banner health-bad" style={{ marginTop: 10 }}>
-              <strong>Lumo AI credits exhausted</strong>
+              <strong>Llama AI credits exhausted</strong>
               <span>
-                Email classification is paused until Lumo credits reset
+                Email classification is paused until Llama credits reset
                 {creditsExhaustedAt ? ` (since ${creditsExhaustedAt})` : ""}. It resumes automatically
                 on the next successful classification.
               </span>

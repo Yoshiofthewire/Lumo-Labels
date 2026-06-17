@@ -1,4 +1,4 @@
-package lumo
+package llama
 
 import (
 	"bytes"
@@ -88,7 +88,7 @@ func (c *HTTPClient) Warmup(ctx context.Context) error {
 
 func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sender, subject, body string) (string, error) {
 	if err := c.ensureWarm(ctx); err != nil {
-		appendLumoErrorLog(err.Error())
+		appendLlamaErrorLog(err.Error())
 		return "", err
 	}
 
@@ -100,51 +100,51 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 	}
 	defer func() { c.lastClassify = time.Now() }()
 
-	appendLumoServerLog(fmt.Sprintf("[CLASSIFY] From: %s | Subject: [%s]", sender, subject))
+	appendLlamaServerLog(fmt.Sprintf("[CLASSIFY] From: %s | Subject: [%s]", sender, subject))
 
 	prompt := buildRuntimePrompt(c.tuningTemplate, allowedLabels, sender, subject, body)
 	for attempt := 0; attempt < 3; attempt++ {
 		result, err := c.classifyOnce(ctx, prompt)
 		if err != nil {
-			appendLumoErrorLog(err.Error())
+			appendLlamaErrorLog(err.Error())
 			return "", err
 		}
 
 		normalized := strings.TrimSpace(result)
-		appendLumoOutputLog(normalized)
+		appendLlamaOutputLog(normalized)
 
 		if strings.Contains(strings.ToLower(normalized), "you've reached your weekly chat limit") {
-			appendLumoErrorLog("AI credits exhausted: weekly chat limit response from model")
-			appendLumoServerLog("[CLASSIFY FAILED] AI credits exhausted (weekly chat limit reached)")
+			appendLlamaErrorLog("AI credits exhausted: weekly chat limit response from model")
+			appendLlamaServerLog("[CLASSIFY FAILED] AI credits exhausted (weekly chat limit reached)")
 			return "", fmt.Errorf("%s\nuser has run out of ai credits", normalized)
 		}
 
 		if isToolsOnlyResponse(normalized) {
-			appendLumoServerLog(fmt.Sprintf("[CLASSIFY RETRY] tools-only response on attempt %d/%d, waiting before retry", attempt+1, 3))
+			appendLlamaServerLog(fmt.Sprintf("[CLASSIFY RETRY] tools-only response on attempt %d/%d, waiting before retry", attempt+1, 3))
 			if attempt < 2 {
 				if err := sleepWithContext(ctx, classifyRetryDelay(attempt, 15*time.Second)); err != nil {
 					return "", err
 				}
 				continue
 			}
-			appendLumoServerLog("[CLASSIFY FAILED] tools-only response exhausted all inner retries")
+			appendLlamaServerLog("[CLASSIFY FAILED] tools-only response exhausted all inner retries")
 			return "", fmt.Errorf("model returned tools-only response after %d attempts", attempt+1)
 		}
 
 		if hasEmptyMessageNoise(normalized) || normalized == "" {
-			appendLumoServerLog(fmt.Sprintf("[CLASSIFY RETRY] empty-message noise on attempt %d/%d, waiting before retry", attempt+1, 3))
+			appendLlamaServerLog(fmt.Sprintf("[CLASSIFY RETRY] empty-message noise on attempt %d/%d, waiting before retry", attempt+1, 3))
 			if attempt < 2 {
 				if err := sleepWithContext(ctx, classifyRetryDelay(attempt, classifyRetryBackoff)); err != nil {
 					return "", err
 				}
 				continue
 			}
-			appendLumoServerLog("[CLASSIFY FAILED] empty-message noise exhausted all inner retries")
+			appendLlamaServerLog("[CLASSIFY FAILED] empty-message noise exhausted all inner retries")
 			return "", fmt.Errorf("model returned empty-message noise after %d attempts", attempt+1)
 		}
 
 		searchText := stripTransientNoise(labelSearchScope(normalized))
-		appendLumoServerLog(fmt.Sprintf("[CLASSIFY RESPONSE] %s", strings.SplitN(searchText, "\n", 2)[0]))
+		appendLlamaServerLog(fmt.Sprintf("[CLASSIFY RESPONSE] %s", strings.SplitN(searchText, "\n", 2)[0]))
 
 		for _, line := range strings.Split(searchText, "\n") {
 			line = strings.TrimSpace(line)
@@ -249,7 +249,7 @@ func (c *HTTPClient) ensureWarm(ctx context.Context) error {
 }
 
 func (c *HTTPClient) runWarmup(ctx context.Context) error {
-	appendLumoServerLog("[OLLAMA WARMUP] starting")
+	appendLlamaServerLog("[OLLAMA WARMUP] starting")
 	warmCtx, cancel := context.WithTimeout(ctx, warmupRequestTimeout)
 	defer cancel()
 
@@ -261,7 +261,7 @@ func (c *HTTPClient) runWarmup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	appendLumoServerLog("[OLLAMA WARMUP] model ready")
+	appendLlamaServerLog("[OLLAMA WARMUP] model ready")
 	return nil
 }
 
@@ -291,7 +291,7 @@ func (c *HTTPClient) pullModel(ctx context.Context) error {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("ollama pull failed: status %d body: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	appendLumoServerLog("[OLLAMA WARMUP] model pulled")
+	appendLlamaServerLog("[OLLAMA WARMUP] model pulled")
 	return nil
 }
 
@@ -463,7 +463,7 @@ func LoadGuardrailText() string {
 	if envPath := strings.TrimSpace(os.Getenv("GARDRAIL_FILE")); envPath != "" {
 		paths = append(paths, envPath)
 	}
-	paths = append(paths, "GARDRAIL.md", "/opt/lumo-lab/GARDRAIL.md")
+	paths = append(paths, "GARDRAIL.md", "/opt/llama-lab/GARDRAIL.md")
 
 	for _, p := range paths {
 		b, err := os.ReadFile(p)
@@ -483,7 +483,7 @@ func LoadTuningText() string {
 	if envPath := strings.TrimSpace(os.Getenv("TUNING_FILE")); envPath != "" {
 		paths = append(paths, envPath)
 	}
-	paths = append(paths, "/lumo_lab/config/TUNING.md", "TUNING.md", "/opt/lumo-lab/TUNING.md")
+	paths = append(paths, "/llama_lab/config/TUNING.md", "TUNING.md", "/opt/llama-lab/TUNING.md")
 
 	for _, p := range paths {
 		b, err := os.ReadFile(p)
@@ -498,16 +498,16 @@ func LoadTuningText() string {
 	return ""
 }
 
-func appendLumoOutputLog(result string) {
+func appendLlamaOutputLog(result string) {
 	trimmed := strings.TrimSpace(result)
 	if trimmed == "" {
 		return
 	}
 	logDir := strings.TrimSpace(os.Getenv("LOG_DIR"))
 	if logDir == "" {
-		logDir = "/lumo_lab/logs"
+		logDir = "/llama_lab/logs"
 	}
-	path := filepath.Join(logDir, "lumo.log")
+	path := filepath.Join(logDir, "llama.log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
@@ -524,16 +524,16 @@ func appendLumoOutputLog(result string) {
 	}
 }
 
-func appendLumoServerLog(message string) {
+func appendLlamaServerLog(message string) {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
 		return
 	}
 	logDir := strings.TrimSpace(os.Getenv("LOG_DIR"))
 	if logDir == "" {
-		logDir = "/lumo_lab/logs"
+		logDir = "/llama_lab/logs"
 	}
-	path := filepath.Join(logDir, "lumo-server.log")
+	path := filepath.Join(logDir, "llama-server.log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
@@ -549,16 +549,16 @@ func appendLumoServerLog(message string) {
 	}
 }
 
-func appendLumoErrorLog(message string) {
+func appendLlamaErrorLog(message string) {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
 		return
 	}
 	logDir := strings.TrimSpace(os.Getenv("LOG_DIR"))
 	if logDir == "" {
-		logDir = "/lumo_lab/logs"
+		logDir = "/llama_lab/logs"
 	}
-	path := filepath.Join(logDir, "lumo.err.log")
+	path := filepath.Join(logDir, "llama.err.log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
@@ -571,7 +571,7 @@ func appendLumoErrorLog(message string) {
 		if line == "" {
 			continue
 		}
-		_, _ = fmt.Fprintf(f, "[%s] [LUMO ERROR] %s\n", ts, line)
+		_, _ = fmt.Fprintf(f, "[%s] [LLAMA ERROR] %s\n", ts, line)
 	}
 }
 

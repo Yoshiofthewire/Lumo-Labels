@@ -1,4 +1,4 @@
-module lumo-lab/backend
+module llama-lab/backend
 
 go 1.26.4
 

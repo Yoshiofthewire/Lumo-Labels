@@ -1,4 +1,4 @@
-package lumo
+package llama
 
 import (
 	"context"

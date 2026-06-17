@@ -184,7 +184,7 @@ func (s *Store) persistLocked() error {
 	return nil
 }
 
-// SetAICreditsExhausted marks that Lumo reported the weekly chat limit / out of
+// SetAICreditsExhausted marks that Llama reported the weekly chat limit / out of
 // AI credits. It returns true only on the false->true transition so callers can
 // notify exactly once until the flag is reset. The flag is persisted so it
 // survives a restart.

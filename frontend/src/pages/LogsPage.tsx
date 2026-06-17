@@ -9,10 +9,10 @@ const REFRESH_OPTIONS = [
   { label: "30s", value: 30 },
 ];
 const HIDDEN_LOG_PREFIXES = ["bootstrap", "proton"];
-const HIDDEN_LOG_FILES = ["lumo.log"];
+const HIDDEN_LOG_FILES = ["llama.log"];
 
 // Files that should always appear first, in this order.
-const PINNED_LOG_ORDER = ["app.log", "lumo.log", "lumo-error.log"];
+const PINNED_LOG_ORDER = ["app.log", "llama.log", "llama-error.log"];
 
 function sortLogFiles(files: string[]): string[] {
   const pinned = PINNED_LOG_ORDER.filter((f) => files.includes(f));
@@ -21,7 +21,7 @@ function sortLogFiles(files: string[]): string[] {
 }
 
 function tabLabel(filename: string): string {
-  if (filename === "lumo.log") return "Lumo Server";
+  if (filename === "llama.log") return "Llama Server";
   return filename.replace(/\.log$/, "").replace(/[._-]/g, " ");
 }
 

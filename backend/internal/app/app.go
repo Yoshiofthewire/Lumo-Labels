@@ -13,28 +13,28 @@ import (
 	"syscall"
 	"time"
 
-	"lumo-lab/backend/internal/adapters/lumo"
-	"lumo-lab/backend/internal/adapters/proton"
-	"lumo-lab/backend/internal/api"
-	"lumo-lab/backend/internal/config"
-	"lumo-lab/backend/internal/health"
-	"lumo-lab/backend/internal/logging"
-	"lumo-lab/backend/internal/processor"
-	"lumo-lab/backend/internal/state"
+	"llama-lab/backend/internal/adapters/llama"
+	"llama-lab/backend/internal/adapters/proton"
+	"llama-lab/backend/internal/api"
+	"llama-lab/backend/internal/config"
+	"llama-lab/backend/internal/health"
+	"llama-lab/backend/internal/logging"
+	"llama-lab/backend/internal/processor"
+	"llama-lab/backend/internal/state"
 )
 
 // Run dispatches the process mode and blocks until shutdown for long-running modes.
 func Run(args []string) error {
-	fs := flag.NewFlagSet("lumo-lab", flag.ContinueOnError)
+	fs := flag.NewFlagSet("llama-lab", flag.ContinueOnError)
 	mode := fs.String("mode", "all", "process mode: daemon, server, all")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	paths := config.Paths{
-		ConfigFile: filepath.Join(envOrDefault("CONFIG_DIR", "/lumo_lab/config"), "config.yaml"),
-		StateDir:   envOrDefault("STATE_DIR", "/lumo_lab/state"),
-		LogDir:     envOrDefault("LOG_DIR", "/lumo_lab/logs"),
+		ConfigFile: filepath.Join(envOrDefault("CONFIG_DIR", "/llama_lab/config"), "config.yaml"),
+		StateDir:   envOrDefault("STATE_DIR", "/llama_lab/state"),
+		LogDir:     envOrDefault("LOG_DIR", "/llama_lab/logs"),
 	}
 
 	cfg, err := config.LoadOrInit(paths.ConfigFile)
@@ -51,7 +51,7 @@ func Run(args []string) error {
 
 	// Auto-populate label allowlist from TUNING.md when the config has none.
 	if len(cfg.Labels.Allowlist) == 0 {
-		if labels := lumo.ParseAllowedLabels(lumo.LoadTuningText()); len(labels) > 0 {
+		if labels := llama.ParseAllowedLabels(llama.LoadTuningText()); len(labels) > 0 {
 			cfg.Labels.Allowlist = labels
 		}
 	}
@@ -83,12 +83,12 @@ func Run(args []string) error {
 }
 
 func runDaemon(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service) error {
-	lumoClient := newLumoClient(cfg)
-	poller, err := processor.New(cfg, logger, store, healthSvc, newProtonClient(), lumoClient)
+	llamaClient := newLlamaClient(cfg)
+	poller, err := processor.New(cfg, logger, store, healthSvc, newProtonClient(), llamaClient)
 	if err != nil {
 		return err
 	}
-	warmupLumoOnStartup(logger, lumoClient, poller)
+	warmupLlamaOnStartup(logger, llamaClient, poller)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go poller.Run()
@@ -112,12 +112,12 @@ func runAll(cfg config.Config, logger *logging.Logger, store *state.Store, healt
 	}
 	protonClient := newProtonClient()
 	srv := api.NewServer(cfg, logger, store, healthSvc, protonClient)
-	lumoClient := newLumoClient(cfg)
-	poller, err := processor.New(cfg, logger, store, healthSvc, protonClient, lumoClient)
+	llamaClient := newLlamaClient(cfg)
+	poller, err := processor.New(cfg, logger, store, healthSvc, protonClient, llamaClient)
 	if err != nil {
 		return err
 	}
-	warmupLumoOnStartup(logger, lumoClient, poller)
+	warmupLlamaOnStartup(logger, llamaClient, poller)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -171,30 +171,30 @@ func envDurationSeconds(name string, fallback int) int {
 	return v
 }
 
-func newLumoClient(cfg config.Config) lumo.Client {
+func newLlamaClient(cfg config.Config) llama.Client {
 	baseURL := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(os.Getenv("LUMO_BASE_URL"))
+		baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
 	}
 	if baseURL == "" {
 		baseURL = "http://127.0.0.1:11434"
 	}
 	if baseURL == "" {
-		return &lumo.StubClient{}
+		return &llama.StubClient{}
 	}
 	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
 	classifyPath := strings.TrimSpace(os.Getenv("OLLAMA_GENERATE_PATH"))
 	if classifyPath == "" {
 		classifyPath = "/api/generate"
 	}
-	tuning := lumo.LoadTuningText()
-	return lumo.NewHTTPClient(baseURL, apiKey, classifyPath, tuning, 3*time.Minute)
+	tuning := llama.LoadTuningText()
+	return llama.NewHTTPClient(baseURL, apiKey, classifyPath, tuning, 3*time.Minute)
 }
 
 func newProtonClient() proton.Client {
 	path := strings.TrimSpace(os.Getenv("PROTON_AUTH_FILE"))
 	if path == "" {
-		path = "/lumo_lab/config/proton-auth.json"
+		path = "/llama_lab/config/proton-auth.json"
 	}
 	if _, err := os.Stat(path); err == nil {
 		return proton.NewAPIClientFromEnv()
@@ -202,7 +202,7 @@ func newProtonClient() proton.Client {
 	return &proton.StubClient{}
 }
 
-func warmupLumoOnStartup(logger *logging.Logger, client lumo.Client, trigger interface{ TriggerNow() }) {
+func warmupLlamaOnStartup(logger *logging.Logger, client llama.Client, trigger interface{ TriggerNow() }) {
 	type warmupClient interface {
 		Warmup(ctx context.Context) error
 	}
@@ -219,12 +219,12 @@ func warmupLumoOnStartup(logger *logging.Logger, client lumo.Client, trigger int
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		logger.Info("lumo startup warmup requested")
+		logger.Info("llama startup warmup requested")
 		if err := w.Warmup(ctx); err != nil {
-			logger.Error("lumo startup warmup failed", "error", err.Error())
+			logger.Error("llama startup warmup failed", "error", err.Error())
 			return
 		}
-		logger.Info("lumo startup warmup completed")
+		logger.Info("llama startup warmup completed")
 		if trigger != nil {
 			logger.Info("processing unread unlabeled mail after startup warmup")
 			type unreadSweepTrigger interface {

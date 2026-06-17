@@ -24,12 +24,12 @@ import (
 	"syscall"
 	"time"
 
-	"lumo-lab/backend/internal/adapters/lumo"
-	"lumo-lab/backend/internal/adapters/proton"
-	"lumo-lab/backend/internal/config"
-	"lumo-lab/backend/internal/health"
-	"lumo-lab/backend/internal/logging"
-	"lumo-lab/backend/internal/state"
+	"llama-lab/backend/internal/adapters/llama"
+	"llama-lab/backend/internal/adapters/proton"
+	"llama-lab/backend/internal/config"
+	"llama-lab/backend/internal/health"
+	"llama-lab/backend/internal/logging"
+	"llama-lab/backend/internal/state"
 
 	"golang.org/x/crypto/scrypt"
 )
@@ -44,7 +44,7 @@ type Server struct {
 	logPath        string
 	adminPath      string
 	tuningPath     string
-	lumoAuthPath   string
+	llamaAuthPath   string
 	protonAuthPath string
 	protonKeyPath  string
 	protonPassPath string
@@ -53,16 +53,16 @@ type Server struct {
 }
 
 func NewServer(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service, protonClient proton.Client) *Server {
-	secretDir := envOrDefault("SECRET_DIR", "/lumo_lab/private")
-	configPath := filepath.Join(envOrDefault("CONFIG_DIR", "/lumo_lab/config"), "config.yaml")
-	logPath := filepath.Join(envOrDefault("LOG_DIR", "/lumo_lab/logs"), "app.log")
-	adminPath := filepath.Join(envOrDefault("CONFIG_DIR", "/lumo_lab/config"), "admin.env")
+	secretDir := envOrDefault("SECRET_DIR", "/llama_lab/private")
+	configPath := filepath.Join(envOrDefault("CONFIG_DIR", "/llama_lab/config"), "config.yaml")
+	logPath := filepath.Join(envOrDefault("LOG_DIR", "/llama_lab/logs"), "app.log")
+	adminPath := filepath.Join(envOrDefault("CONFIG_DIR", "/llama_lab/config"), "admin.env")
 	tuningPath := resolveTuningPath()
-	lumoAuthPath := envOrDefault("LUMO_AUTH_FILE", "/lumo_lab/config/lumo-auth.json")
-	protonAuthPath := envOrDefault("PROTON_AUTH_FILE", "/lumo_lab/config/proton-auth.json")
+	llamaAuthPath := envOrDefault("LLAMA_AUTH_FILE", "/llama_lab/config/llama-auth.json")
+	protonAuthPath := envOrDefault("PROTON_AUTH_FILE", "/llama_lab/config/proton-auth.json")
 	protonKeyPath := envOrDefault("PROTON_PRIVATE_KEY_FILE", filepath.Join(secretDir, "proton-private-key.asc"))
 	protonPassPath := envOrDefault("PROTON_PRIVATE_KEY_PASSWORD_FILE", filepath.Join(secretDir, "proton-private-key-password"))
-	return &Server{cfg: cfg, logger: logger, store: store, health: healthSvc, configPath: configPath, logPath: logPath, adminPath: adminPath, tuningPath: tuningPath, lumoAuthPath: lumoAuthPath, protonAuthPath: protonAuthPath, protonKeyPath: protonKeyPath, protonPassPath: protonPassPath, proton: protonClient, sessions: map[string]time.Time{}}
+	return &Server{cfg: cfg, logger: logger, store: store, health: healthSvc, configPath: configPath, logPath: logPath, adminPath: adminPath, tuningPath: tuningPath, llamaAuthPath: llamaAuthPath, protonAuthPath: protonAuthPath, protonKeyPath: protonKeyPath, protonPassPath: protonPassPath, proton: protonClient, sessions: map[string]time.Time{}}
 }
 
 func (s *Server) Run() error {
@@ -79,10 +79,10 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/decisions", s.withAuth(s.handleDecisions))
 	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
 	mux.HandleFunc("/api/logs/list", s.withAuth(s.handleLogsList))
-	mux.HandleFunc("/api/lumo/auth", s.withAuth(s.handleLumoAuth))
+	mux.HandleFunc("/api/llama/auth", s.withAuth(s.handleLlamaAuth))
 	mux.HandleFunc("/api/proton/auth", s.withAuth(s.handleProtonAuth))
 	mux.HandleFunc("/api/proton/private-key", s.withAuth(s.handleProtonPrivateKey))
-	mux.HandleFunc("/api/lumo/test", s.withAuth(s.handleLumoTest))
+	mux.HandleFunc("/api/llama/test", s.withAuth(s.handleLlamaTest))
 	mux.HandleFunc("/api/tuning", s.withAuth(s.handleTuning))
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	mux.HandleFunc("/", s.handleFrontend)
@@ -181,7 +181,7 @@ func (s *Server) handleTuning(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(s.tuningPath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				fallback := strings.TrimSpace(lumo.LoadTuningText())
+				fallback := strings.TrimSpace(llama.LoadTuningText())
 				if fallback != "" {
 					writeJSON(w, http.StatusOK, map[string]any{"content": fallback, "path": s.tuningPath})
 					return
@@ -211,11 +211,11 @@ func (s *Server) handleTuning(w http.ResponseWriter, r *http.Request) {
 		}
 		restartOk := true
 		restartError := ""
-		if err := restartLumoProcess(r.Context()); err != nil {
+		if err := restartLlamaProcess(r.Context()); err != nil {
 			restartOk = false
 			restartError = err.Error()
 		} else {
-			lumo.ResetWarmupState()
+			llama.ResetWarmupState()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": s.tuningPath, "restartOk": restartOk, "restartError": restartError})
 	default:
@@ -223,28 +223,28 @@ func (s *Server) handleTuning(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleLumoAuth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLlamaAuth(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		info, err := os.Stat(s.lumoAuthPath)
+		info, err := os.Stat(s.llamaAuthPath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"exists":       false,
-					"path":         s.lumoAuthPath,
-					"localEnabled": strings.EqualFold(envOrDefault("LUMO_LOCAL_ENABLED", "true"), "true"),
+					"path":         s.llamaAuthPath,
+					"localEnabled": strings.EqualFold(envOrDefault("LLAMA_LOCAL_ENABLED", "true"), "true"),
 				})
 				return
 			}
-			http.Error(w, "failed to read lumo auth status", http.StatusInternalServerError)
+			http.Error(w, "failed to read llama auth status", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"exists":       true,
-			"path":         s.lumoAuthPath,
+			"path":         s.llamaAuthPath,
 			"size":         info.Size(),
 			"modifiedAt":   info.ModTime().UTC().Format(time.RFC3339),
-			"localEnabled": strings.EqualFold(envOrDefault("LUMO_LOCAL_ENABLED", "true"), "true"),
+			"localEnabled": strings.EqualFold(envOrDefault("LLAMA_LOCAL_ENABLED", "true"), "true"),
 		})
 	case http.MethodPost:
 		if err := r.ParseMultipartForm(8 << 20); err != nil {
@@ -276,28 +276,28 @@ func (s *Server) handleLumoAuth(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "auth file json is empty", http.StatusBadRequest)
 			return
 		}
-		if err := os.MkdirAll(filepath.Dir(s.lumoAuthPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(s.llamaAuthPath), 0o755); err != nil {
 			http.Error(w, "failed to create auth directory", http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(s.lumoAuthPath, payload, 0o600); err != nil {
+		if err := os.WriteFile(s.llamaAuthPath, payload, 0o600); err != nil {
 			http.Error(w, "failed to save auth file", http.StatusInternalServerError)
 			return
 		}
-		if err := restartLumoProcess(r.Context()); err != nil {
+		if err := restartLlamaProcess(r.Context()); err != nil {
 			writeJSON(w, http.StatusAccepted, map[string]any{
 				"ok":           true,
-				"path":         s.lumoAuthPath,
+				"path":         s.llamaAuthPath,
 				"filename":     header.Filename,
 				"restartOk":    false,
 				"restartError": err.Error(),
 			})
 			return
 		}
-		lumo.ResetWarmupState()
+		llama.ResetWarmupState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
-			"path":      s.lumoAuthPath,
+			"path":      s.llamaAuthPath,
 			"filename":  header.Filename,
 			"restartOk": true,
 		})
@@ -364,7 +364,7 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"uid":          uid,
 			"accessToken":  access,
 			"refreshToken": refresh,
-			"source":       "lumo-storage-state",
+			"source":       "llama-storage-state",
 			"clientID":     clientID,
 			"cookies":      cookies,
 			"updatedAt":    time.Now().UTC().Format(time.RFC3339),
@@ -378,15 +378,15 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		lumoAuthUpdated := false
-		lumoAuthError := ""
-		if strings.TrimSpace(s.lumoAuthPath) != "" {
-			if err := os.MkdirAll(filepath.Dir(s.lumoAuthPath), 0o755); err != nil {
-				lumoAuthError = err.Error()
-			} else if err := os.WriteFile(s.lumoAuthPath, payload, 0o600); err != nil {
-				lumoAuthError = err.Error()
+		llamaAuthUpdated := false
+		llamaAuthError := ""
+		if strings.TrimSpace(s.llamaAuthPath) != "" {
+			if err := os.MkdirAll(filepath.Dir(s.llamaAuthPath), 0o755); err != nil {
+				llamaAuthError = err.Error()
+			} else if err := os.WriteFile(s.llamaAuthPath, payload, 0o600); err != nil {
+				llamaAuthError = err.Error()
 			} else {
-				lumoAuthUpdated = true
+				llamaAuthUpdated = true
 			}
 		}
 
@@ -414,9 +414,9 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"path":             s.protonAuthPath,
 			"filename":         header.Filename,
 			"conversionMethod": "cookie-extract",
-			"lumoAuthPath":     s.lumoAuthPath,
-			"lumoAuthUpdated":  lumoAuthUpdated,
-			"lumoAuthError":    lumoAuthError,
+			"llamaAuthPath":     s.llamaAuthPath,
+			"llamaAuthUpdated":  llamaAuthUpdated,
+			"llamaAuthError":    llamaAuthError,
 			"restartRequested": restartRequested,
 			"nextAction":       nextAction,
 		})
@@ -520,7 +520,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 			lines = v
 		}
 	}
-	logDir := envOrDefault("LOG_DIR", "/lumo_lab/logs")
+	logDir := envOrDefault("LOG_DIR", "/llama_lab/logs")
 	// Resolve requested file — default to app.log, allow any *.log in logDir
 	filename := filepath.Base(r.URL.Query().Get("file"))
 	if filename == "" || filename == "." {
@@ -545,7 +545,7 @@ func (s *Server) handleLogsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	logDir := envOrDefault("LOG_DIR", "/lumo_lab/logs")
+	logDir := envOrDefault("LOG_DIR", "/llama_lab/logs")
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
 		http.Error(w, "failed to list logs", http.StatusInternalServerError)
@@ -625,7 +625,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.sessions[token] = time.Now().Add(24 * time.Hour)
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "lumo_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: "llama_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mustChangePassword": strings.EqualFold(admin["MUST_CHANGE_PASSWORD"], "true")})
 }
 
@@ -634,13 +634,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	c, err := r.Cookie("lumo_session")
+	c, err := r.Cookie("llama_session")
 	if err == nil {
 		s.mu.Lock()
 		delete(s.sessions, c.Value)
 		s.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: "lumo_session", Value: "", Path: "/", Expires: time.Unix(0, 0), MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: "llama_session", Value: "", Path: "/", Expires: time.Unix(0, 0), MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -712,7 +712,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLlamaTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -730,27 +730,27 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg
 	s.mu.RUnlock()
 
-	baseURL := strings.TrimSpace(cfg.Lumo.BaseURL)
+	baseURL := strings.TrimSpace(cfg.Llama.BaseURL)
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(os.Getenv("LUMO_BASE_URL"))
+		baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
 	}
 	if baseURL == "" {
-		http.Error(w, "lumo base url is not configured", http.StatusBadRequest)
+		http.Error(w, "llama base url is not configured", http.StatusBadRequest)
 		return
 	}
 
-	path := strings.TrimSpace(cfg.Lumo.ClassifyPath)
+	path := strings.TrimSpace(cfg.Llama.ClassifyPath)
 	if path == "" {
 		path = "/"
 	}
-	apiKey := strings.TrimSpace(cfg.Lumo.APIKey)
+	apiKey := strings.TrimSpace(cfg.Llama.APIKey)
 	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("LUMO_API_KEY"))
+		apiKey = strings.TrimSpace(os.Getenv("LLAMA_API_KEY"))
 	}
 
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
-		prompt = "Email Address: test@example.com  Subject Line: Lumo connectivity test Return only the label Updates"
+		prompt = "Email Address: test@example.com  Subject Line: Llama connectivity test Return only the label Updates"
 	}
 
 	allowed := cfg.Labels.Allowlist
@@ -758,8 +758,8 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 		allowed = []string{"Questionable", "Important"}
 	}
 
-	tuning := lumo.LoadTuningText()
-	client := lumo.NewHTTPClient(baseURL, apiKey, path, tuning, 120*time.Second)
+	tuning := llama.LoadTuningText()
+	client := llama.NewHTTPClient(baseURL, apiKey, path, tuning, 120*time.Second)
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
@@ -778,7 +778,7 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFrontend(w http.ResponseWriter, r *http.Request) {
-	frontendDir := envOrDefault("FRONTEND_DIR", "/opt/lumo-lab/frontend")
+	frontendDir := envOrDefault("FRONTEND_DIR", "/opt/llama-lab/frontend")
 	indexPath := filepath.Join(frontendDir, "index.html")
 
 	requestPath := path.Clean("/" + r.URL.Path)
@@ -814,7 +814,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) authorize(r *http.Request) bool {
-	cookie, err := r.Cookie("lumo_session")
+	cookie, err := r.Cookie("llama_session")
 	if err != nil {
 		return false
 	}
@@ -876,16 +876,16 @@ func resolveTuningPath() string {
 	if envPath := strings.TrimSpace(os.Getenv("TUNING_FILE")); envPath != "" {
 		return envPath
 	}
-	candidates := []string{"/lumo_lab/config/TUNING.md", "TUNING.md", "/opt/lumo-lab/TUNING.md"}
+	candidates := []string{"/llama_lab/config/TUNING.md", "TUNING.md", "/opt/llama-lab/TUNING.md"}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	return "/lumo_lab/config/TUNING.md"
+	return "/llama_lab/config/TUNING.md"
 }
 
-func restartLumoProcess(ctx context.Context) error {
+func restartLlamaProcess(ctx context.Context) error {
 	run := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "supervisorctl", args...)
 		cmd.Env = os.Environ()
@@ -893,9 +893,9 @@ func restartLumoProcess(ctx context.Context) error {
 		return strings.TrimSpace(string(out)), err
 	}
 
-	out, err := run("-c", "/etc/supervisord.conf", "restart", "lumo")
+	out, err := run("-c", "/etc/supervisord.conf", "restart", "llama")
 	if err == nil {
-		lumo.ResetWarmupState()
+		llama.ResetWarmupState()
 		return nil
 	}
 
@@ -905,9 +905,9 @@ func restartLumoProcess(ctx context.Context) error {
 	}
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "not running") || strings.Contains(lower, "spawn error") || strings.Contains(lower, "fatal") {
-		startOut, startErr := run("-c", "/etc/supervisord.conf", "start", "lumo")
+		startOut, startErr := run("-c", "/etc/supervisord.conf", "start", "llama")
 		if startErr == nil {
-			lumo.ResetWarmupState()
+			llama.ResetWarmupState()
 			return nil
 		}
 		if strings.TrimSpace(startOut) != "" {
@@ -915,7 +915,7 @@ func restartLumoProcess(ctx context.Context) error {
 		}
 	}
 
-	return fmt.Errorf("restart lumo: %s", msg)
+	return fmt.Errorf("restart llama: %s", msg)
 }
 
 func restartDaemonProcess(ctx context.Context) error {
@@ -949,7 +949,7 @@ func restartDaemonProcess(ctx context.Context) error {
 	return fmt.Errorf("restart daemon: %s", msg)
 }
 
-// signalDaemonProcessRestart finds the running `lumo-lab --mode daemon` process
+// signalDaemonProcessRestart finds the running `llama-lab --mode daemon` process
 // and sends it SIGTERM. The daemon program is configured with autorestart=true
 // in supervisord, so supervisord respawns it with the freshly written tokens.
 // This is used as a fallback when supervisorctl is unavailable, avoiding a full
@@ -976,7 +976,7 @@ func signalDaemonProcessRestart() error {
 		}
 		// /proc/<pid>/cmdline is NUL-separated.
 		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
-		if !strings.Contains(cmdline, "lumo-lab") {
+		if !strings.Contains(cmdline, "llama-lab") {
 			continue
 		}
 		if !strings.Contains(cmdline, "--mode") || !strings.Contains(cmdline, "daemon") {

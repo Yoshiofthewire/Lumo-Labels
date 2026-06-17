@@ -7,7 +7,7 @@ type AppConfig = {
   scan: { intervalSeconds: number };
   rateLimits: { perMinute: number; perHour: number };
   labels: { allowlist: string[] };
-  lumo: { baseUrl: string; apiKey: string; classifyPath: string };
+  llama: { baseUrl: string; apiKey: string; classifyPath: string };
 };
 
 type LabelsResponse = {
@@ -20,7 +20,7 @@ type TuningResponse = {
   path?: string;
 };
 
-type LumoAuthStatus = {
+type LlamaAuthStatus = {
   exists: boolean;
   path: string;
   size?: number;
@@ -65,7 +65,7 @@ type ProtonPrivateKeyUploadResponse = {
   decryptReady: boolean;
 };
 
-type LumoAuthNoticeTone = "idle" | "success" | "warning" | "error";
+type LlamaAuthNoticeTone = "idle" | "success" | "warning" | "error";
 
 function normalizeLabelName(raw: string): string {
   return raw.replace(/^[-*]\s*/, "").replace(/:$/, "").trim();
@@ -203,9 +203,9 @@ function parseDefinitions(content: string): Record<string, string> {
 function buildTuningTemplate(labels: string[], defs: Record<string, string>): string {
   const ordered = labels.filter(Boolean);
   const lines: string[] = [];
-  lines.push("# Lumo Labeling Instructions");
+  lines.push("# Llama Labeling Instructions");
   lines.push("");
-  lines.push("You are Lumo. Use this document as the source of truth for assigning inbox labels.");
+  lines.push("You are Llama. Use this document as the source of truth for assigning inbox labels.");
   lines.push("");
   lines.push("## Allowed Labels");
   lines.push("");
@@ -250,7 +250,7 @@ function buildTuningTemplate(labels: string[], defs: Record<string, string>): st
 }
 
 export function ConfigPage() {
-  const testPrompt = "Email Address: test@example.com  Subject Line: Lumo connectivity test Return only the label Updates";
+  const testPrompt = "Email Address: test@example.com  Subject Line: Llama connectivity test Return only the label Updates";
   const [cfg, setCfg] = useState<AppConfig | null>(null);
   const [status, setStatus] = useState("");
   const [testResult, setTestResult] = useState("");
@@ -263,13 +263,13 @@ export function ConfigPage() {
   const [protonAuth, setProtonAuth] = useState<ProtonAuthStatus | null>(null);
   const [protonAuthFile, setProtonAuthFile] = useState<File | null>(null);
   const [protonAuthStatus, setProtonAuthStatus] = useState("");
-  const [protonAuthTone, setProtonAuthTone] = useState<LumoAuthNoticeTone>("idle");
+  const [protonAuthTone, setProtonAuthTone] = useState<LlamaAuthNoticeTone>("idle");
   const [protonAuthBusy, setProtonAuthBusy] = useState(false);
   const [protonPrivateKey, setProtonPrivateKey] = useState<ProtonPrivateKeyStatus | null>(null);
   const [protonPrivateKeyFile, setProtonPrivateKeyFile] = useState<File | null>(null);
   const [protonPrivateKeyPassword, setProtonPrivateKeyPassword] = useState("");
   const [protonPrivateKeyStatus, setProtonPrivateKeyStatus] = useState("");
-  const [protonPrivateKeyTone, setProtonPrivateKeyTone] = useState<LumoAuthNoticeTone>("idle");
+  const [protonPrivateKeyTone, setProtonPrivateKeyTone] = useState<LlamaAuthNoticeTone>("idle");
   const [protonPrivateKeyBusy, setProtonPrivateKeyBusy] = useState(false);
 
   function hydrateFromTuning(content: string, fallbackLabels: string[]) {
@@ -388,29 +388,29 @@ export function ConfigPage() {
     }
   }
 
-  async function runLumoTest(): Promise<boolean> {
+  async function runLlamaTest(): Promise<boolean> {
     setTestBusy(true);
     setTestResult("");
     try {
       const result = await postJSON<{ ok: boolean; response?: string; error?: string; baseUrl?: string; path?: string }>(
-        "/api/lumo/test",
+        "/api/llama/test",
         { prompt: testPrompt }
       );
       if (!result.ok) {
-        setTestResult(`Lumo test failed: ${result.error ?? "unknown error"}`);
+        setTestResult(`Llama test failed: ${result.error ?? "unknown error"}`);
         return false;
       } else {
         setTestResult(
-          `Lumo test passed\nBase URL: ${result.baseUrl ?? ""}\nPath: ${result.path ?? ""}\nResponse: ${result.response ?? ""}`
+          `Llama test passed\nBase URL: ${result.baseUrl ?? ""}\nPath: ${result.path ?? ""}\nResponse: ${result.response ?? ""}`
         );
         return true;
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown error";
       if (msg.includes("401")) {
-        setTestResult("Lumo test request failed: unauthorized (401). Please log in again.");
+        setTestResult("Llama test request failed: unauthorized (401). Please log in again.");
       } else {
-        setTestResult(`Lumo test request failed: ${msg}. Make sure Lumo is reachable.`);
+        setTestResult(`Llama test request failed: ${msg}. Make sure Llama is reachable.`);
       }
       return false;
     } finally {
@@ -559,9 +559,9 @@ export function ConfigPage() {
       {protonPrivateKeyStatus ? <p className={`notice notice-${protonPrivateKeyTone}`}>{protonPrivateKeyStatus}</p> : null}
 
       <hr />
-      <h3>Test Lumo Connection</h3>
-      <button type="button" onClick={runLumoTest} disabled={testBusy}>
-        {testBusy ? "Testing..." : "Run Lumo Test"}
+      <h3>Test Llama Connection</h3>
+      <button type="button" onClick={runLlamaTest} disabled={testBusy}>
+        {testBusy ? "Testing..." : "Run Llama Test"}
       </button>
       {testResult ? <pre>{testResult}</pre> : null}
 

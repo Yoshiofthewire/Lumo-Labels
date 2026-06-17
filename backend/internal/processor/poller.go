@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"lumo-lab/backend/internal/adapters/lumo"
-	"lumo-lab/backend/internal/adapters/proton"
-	"lumo-lab/backend/internal/config"
-	"lumo-lab/backend/internal/health"
-	"lumo-lab/backend/internal/logging"
-	"lumo-lab/backend/internal/redaction"
-	"lumo-lab/backend/internal/state"
+	"llama-lab/backend/internal/adapters/llama"
+	"llama-lab/backend/internal/adapters/proton"
+	"llama-lab/backend/internal/config"
+	"llama-lab/backend/internal/health"
+	"llama-lab/backend/internal/logging"
+	"llama-lab/backend/internal/redaction"
+	"llama-lab/backend/internal/state"
 )
 
 type Poller struct {
@@ -23,7 +23,7 @@ type Poller struct {
 	store     *state.Store
 	health    *health.Service
 	proton    proton.Client
-	lumo      lumo.Client
+	llama      llama.Client
 	redaction *redaction.Engine
 	cancel    context.CancelFunc
 	mu        sync.Mutex
@@ -31,12 +31,12 @@ type Poller struct {
 	processed []time.Time
 }
 
-func New(cfg config.Config, log *logging.Logger, store *state.Store, healthSvc *health.Service, protonClient proton.Client, lumoClient lumo.Client) (*Poller, error) {
+func New(cfg config.Config, log *logging.Logger, store *state.Store, healthSvc *health.Service, protonClient proton.Client, llamaClient llama.Client) (*Poller, error) {
 	re, err := redaction.New(cfg.Redaction.Patterns)
 	if err != nil {
 		return nil, err
 	}
-	p := &Poller{cfg: cfg, log: log, store: store, health: healthSvc, proton: protonClient, lumo: lumoClient, redaction: re, processed: []time.Time{}}
+	p := &Poller{cfg: cfg, log: log, store: store, health: healthSvc, proton: protonClient, llama: llamaClient, redaction: re, processed: []time.Time{}}
 	p.tickSem = make(chan struct{}, 1)
 	p.tickSem <- struct{}{}
 	return p, nil
@@ -185,7 +185,7 @@ func isProtonAuthUnhealthyError(err error) bool {
 	return false
 }
 
-// recentDecisionsContext returns a short summary of the last N applied decisions to give Lumo labelling context.
+// recentDecisionsContext returns a short summary of the last N applied decisions to give Llama labelling context.
 func (p *Poller) recentDecisionsContext(limit int) string {
 	all := p.store.Decisions(50)
 	var applied []state.Decision
@@ -233,16 +233,16 @@ func (p *Poller) handleMessage(ctx context.Context, msg proton.Message) error {
 		}
 	}
 
-	label, err := classifyWithRetry(ctx, p.lumo, p.cfg.Labels.Allowlist, msg.Sender, msg.Subject, bodyWithContext)
+	label, err := classifyWithRetry(ctx, p.llama, p.cfg.Labels.Allowlist, msg.Sender, msg.Subject, bodyWithContext)
 	if err != nil {
 		if isAICreditsExhaustedError(err) {
 			p.flagAICreditsExhausted()
 		}
 		return err
 	}
-	// A successful classification means Lumo has credits again; clear any flag.
+	// A successful classification means Llama has credits again; clear any flag.
 	p.clearAICreditsExhausted()
-	selected := lumo.SelectLabelFromText(p.cfg.Labels.Allowlist, label)
+	selected := llama.SelectLabelFromText(p.cfg.Labels.Allowlist, label)
 	if selected == "" {
 		_ = p.store.AddDecision(state.Decision{
 			MessageID: msg.ID,
@@ -269,7 +269,7 @@ func (p *Poller) handleMessage(ctx context.Context, msg proton.Message) error {
 	})
 }
 
-func classifyWithRetry(ctx context.Context, c lumo.Client, labels []string, sender, subject, body string) (string, error) {
+func classifyWithRetry(ctx context.Context, c llama.Client, labels []string, sender, subject, body string) (string, error) {
 	var out string
 	var err error
 	for i := 0; i < 3; i++ {
@@ -277,12 +277,12 @@ func classifyWithRetry(ctx context.Context, c lumo.Client, labels []string, send
 		if err == nil && out != "" {
 			return out, nil
 		}
-		if err != nil && isPermanentLumoClassifyError(err) {
+		if err != nil && isPermanentLlamaClassifyError(err) {
 			return "", err
 		}
 		if err == nil {
 			// Classify returned no error but an empty label — treat as retryable.
-			err = fmt.Errorf("lumo returned empty label")
+			err = fmt.Errorf("llama returned empty label")
 		}
 		if i < 2 {
 			time.Sleep(5 * time.Second)
@@ -291,7 +291,7 @@ func classifyWithRetry(ctx context.Context, c lumo.Client, labels []string, send
 	return "", err
 }
 
-func isPermanentLumoClassifyError(err error) bool {
+func isPermanentLlamaClassifyError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -302,14 +302,14 @@ func isPermanentLumoClassifyError(err error) bool {
 	if strings.Contains(msg, "invalid input") || strings.Contains(msg, "unprocessable") {
 		return true
 	}
-	// Out of AI credits will not recover on retry; stop hammering Lumo.
+	// Out of AI credits will not recover on retry; stop hammering Llama.
 	if isAICreditsExhaustedError(err) {
 		return true
 	}
 	return false
 }
 
-// isAICreditsExhaustedError reports whether a classify error is Lumo signalling
+// isAICreditsExhaustedError reports whether a classify error is Llama signalling
 // that the weekly chat limit / AI credits have been exhausted.
 func isAICreditsExhaustedError(err error) bool {
 	if err == nil {
@@ -330,8 +330,8 @@ func (p *Poller) flagAICreditsExhausted() {
 	}
 	p.health.SetAICreditsExhausted(now)
 	if newly {
-		p.log.Error("Lumo AI credits exhausted; email classification paused until credits reset",
-			"detail", "Lumo returned the weekly chat limit response")
+		p.log.Error("Llama AI credits exhausted; email classification paused until credits reset",
+			"detail", "Llama returned the weekly chat limit response")
 	}
 }
 
@@ -346,7 +346,7 @@ func (p *Poller) clearAICreditsExhausted() {
 	}
 	p.health.ClearAICreditsExhausted()
 	if cleared {
-		p.log.Info("Lumo AI credits restored; email classification resumed")
+		p.log.Info("Llama AI credits restored; email classification resumed")
 	}
 }
 

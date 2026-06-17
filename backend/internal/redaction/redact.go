@@ -3,7 +3,7 @@ package redaction
 import (
 	"regexp"
 
-	"lumo-lab/backend/internal/config"
+	"llama-lab/backend/internal/config"
 )
 
 type compiledPattern struct {

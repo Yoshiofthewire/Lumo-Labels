@@ -18,11 +18,11 @@ type Config struct {
 	Timezone string `yaml:"timezone"`
 	LogLevel string `yaml:"logLevel"`
 
-	Lumo struct {
+	Llama struct {
 		BaseURL      string `yaml:"baseUrl"`
 		APIKey       string `yaml:"apiKey"`
 		ClassifyPath string `yaml:"classifyPath"`
-	} `yaml:"lumo"`
+	} `yaml:"llama"`
 
 	Scan struct {
 		IntervalSeconds int `yaml:"intervalSeconds"`
@@ -53,9 +53,9 @@ func Default() Config {
 		Timezone: "America/New_York",
 		LogLevel: "info",
 	}
-	cfg.Lumo.BaseURL = "http://127.0.0.1:3333"
-	cfg.Lumo.APIKey = ""
-	cfg.Lumo.ClassifyPath = "/"
+	cfg.Llama.BaseURL = "http://127.0.0.1:3333"
+	cfg.Llama.APIKey = ""
+	cfg.Llama.ClassifyPath = "/"
 	cfg.Scan.IntervalSeconds = 90
 	cfg.RateLimits.PerMinute = 10
 	cfg.RateLimits.PerHour = 20

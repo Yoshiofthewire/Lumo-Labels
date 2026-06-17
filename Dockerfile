@@ -3,7 +3,7 @@ WORKDIR /app
 COPY backend/go.mod backend/go.sum* ./backend/
 RUN cd backend && go mod download
 COPY backend ./backend
-RUN cd backend && go build -o /app/bin/lumo-lab ./cmd/main.go
+RUN cd backend && go build -o /app/bin/llama-lab ./cmd/main.go
 
 FROM node:20-alpine AS frontend-builder
 WORKDIR /frontend
@@ -16,36 +16,36 @@ FROM node:26.3.0-slim
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends supervisor tzdata curl ca-certificates lsof perl zstd \
 	&& rm -rf /var/lib/apt/lists/* \
-	&& useradd -m -s /bin/bash lumolab
+	&& useradd -m -s /bin/bash llamalab
 
-WORKDIR /opt/lumo-lab
-COPY --from=backend-builder /app/bin/lumo-lab /usr/local/bin/lumo-lab
-COPY --from=frontend-builder /frontend/dist /opt/lumo-lab/frontend
-COPY TUNING.md /opt/lumo-lab/TUNING.md
+WORKDIR /opt/llama-lab
+COPY --from=backend-builder /app/bin/llama-lab /usr/local/bin/llama-lab
+COPY --from=frontend-builder /frontend/dist /opt/llama-lab/frontend
+COPY TUNING.md /opt/llama-lab/TUNING.md
 COPY supervisord.conf /etc/supervisord.conf
-COPY scripts /opt/lumo-lab/scripts
+COPY scripts /opt/llama-lab/scripts
 
-RUN chmod +x /opt/lumo-lab/scripts/*.sh
+RUN chmod +x /opt/llama-lab/scripts/*.sh
 
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
-ENV CONFIG_DIR=/lumo_lab/config
-ENV SECRET_DIR=/lumo_lab/private
-ENV LOG_DIR=/lumo_lab/logs
-ENV STATE_DIR=/lumo_lab/state
+ENV CONFIG_DIR=/llama_lab/config
+ENV SECRET_DIR=/llama_lab/private
+ENV LOG_DIR=/llama_lab/logs
+ENV STATE_DIR=/llama_lab/state
 ENV WEB_PORT=5866
 ENV TZ=America/New_York
 ENV OLLAMA_BASE_URL=http://127.0.0.1:11434
 ENV OLLAMA_MODEL=qwen3:1.7b
-ENV OLLAMA_MODELS=/lumo_lab/state/ollama/models
-ENV PROTON_PRIVATE_KEY_FILE=/lumo_lab/private/proton-private-key.asc
-ENV PROTON_PRIVATE_KEY_PASSWORD_FILE=/lumo_lab/private/proton-private-key-password
+ENV OLLAMA_MODELS=/llama_lab/state/ollama/models
+ENV PROTON_PRIVATE_KEY_FILE=/llama_lab/private/proton-private-key.asc
+ENV PROTON_PRIVATE_KEY_PASSWORD_FILE=/llama_lab/private/proton-private-key-password
 
-RUN mkdir -p /lumo_lab/config /lumo_lab/private /lumo_lab/logs /lumo_lab/state \
-	&& mkdir -p /lumo_lab/state/ollama/models \
-	&& chown -R lumolab:lumolab /lumo_lab /opt/lumo-lab
+RUN mkdir -p /llama_lab/config /llama_lab/private /llama_lab/logs /llama_lab/state \
+	&& mkdir -p /llama_lab/state/ollama/models \
+	&& chown -R llamalab:llamalab /llama_lab /opt/llama-lab
 
-VOLUME ["/lumo_lab/config", "/lumo_lab/private", "/lumo_lab/logs", "/lumo_lab/state"]
+VOLUME ["/llama_lab/config", "/llama_lab/private", "/llama_lab/logs", "/llama_lab/state"]
 EXPOSE 5866
 
-CMD ["/opt/lumo-lab/scripts/entrypoint.sh"]
+CMD ["/opt/llama-lab/scripts/entrypoint.sh"]

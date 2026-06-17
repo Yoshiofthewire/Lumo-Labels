@@ -1,4 +1,4 @@
-<img src="./llamalabel.png" alt="Lumo Labels" />
+<img src="./llamalabel.png" alt="Llama Labels" />
 
 # llama Labels
 
@@ -10,8 +10,8 @@ It polls unread inbox mail, classifies each message with an internal Ollama mode
 
 Runtime is a single container managed by `supervisord`, running:
 
-- API server (`lumo-lab --mode server`)
-- Polling daemon (`lumo-lab --mode daemon`)
+- API server (`llama-lab --mode server`)
+- Polling daemon (`llama-lab --mode daemon`)
 - Internal Ollama service (`ollama serve`)
 - One-shot model pull worker (`ollama pull qwen3:1.7b`)
 
@@ -81,33 +81,33 @@ Primary variables:
 
 - `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
 - `OLLAMA_MODEL` (default `qwen3:1.7b`)
-- `PROTON_AUTH_FILE` (default `/lumo_lab/config/proton-auth.json`)
+- `PROTON_AUTH_FILE` (default `/llama_lab/config/proton-auth.json`)
 - `PROTON_API_HOST` (optional override)
-- `TUNING_FILE` (default `/lumo_lab/config/TUNING.md`)
+- `TUNING_FILE` (default `/llama_lab/config/TUNING.md`)
 - `TZ` (default `America/New_York`)
 
 Notes:
 
-- The image sets `OLLAMA_MODELS=/lumo_lab/state/ollama/models` so model cache persists in volume state.
+- The image sets `OLLAMA_MODELS=/llama_lab/state/ollama/models` so model cache persists in volume state.
 - Ollama API can be exposed by uncommenting `11434:11434` in `docker-compose.yml`.
 
 ## Data and Volumes
 
 Named volumes map to:
 
-- `/lumo_lab/config`
-- `/lumo_lab/logs`
-- `/lumo_lab/state`
+- `/llama_lab/config`
+- `/llama_lab/logs`
+- `/llama_lab/state`
 
 Important files:
 
-- `/lumo_lab/config/config.yaml`
-- `/lumo_lab/config/admin.env`
-- `/lumo_lab/config/proton-auth.json`
-- `/lumo_lab/config/TUNING.md`
-- `/lumo_lab/state/state.json`
-- `/lumo_lab/state/decisions.json`
-- `/lumo_lab/state/ollama/models/*`
+- `/llama_lab/config/config.yaml`
+- `/llama_lab/config/admin.env`
+- `/llama_lab/config/proton-auth.json`
+- `/llama_lab/config/TUNING.md`
+- `/llama_lab/state/state.json`
+- `/llama_lab/state/decisions.json`
+- `/llama_lab/state/ollama/models/*`
 
 ## UI Pages
 
@@ -150,7 +150,7 @@ Logs:
 Auth uploads/tests:
 
 - `GET|POST /api/proton/auth`
-- `POST /api/lumo/test`
+- `POST /api/llama/test`
 
 ## Build and Dev Checks
 
@@ -175,9 +175,9 @@ Main logs:
 
 - `app.log` - API/app-level events
 - `daemon.log` - poller lifecycle and tick summaries
-- `lumo.log` - model/runtime activity and output lines
-- `lumo.err.log` - model/runtime error lines
-- `lumo-server.log` - classify/warmup trace lines
+- `llama.log` - model/runtime activity and output lines
+- `llama.err.log` - model/runtime error lines
+- `llama-server.log` - classify/warmup trace lines
 
 Log UI reads from `/api/logs` and `/api/logs/list`.
 
@@ -195,7 +195,7 @@ Log UI reads from `/api/logs` and `/api/logs/list`.
 - Check logs:
 
 ```bash
-docker compose logs -f lumo-lab
+docker compose logs -f llama-lab
 ```
 
 - Verify model pull happened (`qwen3:1.7b`).
@@ -208,7 +208,7 @@ docker compose restart
 ### Proton auth issues
 
 - Re-upload fresh `mail_auth.json` via Config.
-- Confirm `/lumo_lab/config/proton-auth.json` exists and is parseable.
+- Confirm `/llama_lab/config/proton-auth.json` exists and is parseable.
 - Check `daemon.log` and `app.log` for 401/422 refresh errors.
 
 ### No labels applied
