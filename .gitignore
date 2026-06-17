@@ -29,6 +29,7 @@ scripts/node_modules/
 
 # Local runtime artifacts
 llama_lab/
+share/ollama/models/
 *.pid
 
 # Auth and secret artifacts

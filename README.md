@@ -81,6 +81,7 @@ Primary variables:
 
 - `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
 - `OLLAMA_MODEL` (default `qwen3:1.7b`)
+- `OLLAMA_MODELS_HOST_DIR` (default `./share/ollama/models`, host path bind-mounted for persistent model cache)
 - `PROTON_AUTH_FILE` (default `/llama_lab/config/proton-auth.json`)
 - `PROTON_API_HOST` (optional override)
 - `TUNING_FILE` (default `/llama_lab/config/TUNING.md`)
@@ -88,8 +89,15 @@ Primary variables:
 
 Notes:
 
-- The image sets `OLLAMA_MODELS=/llama_lab/state/ollama/models` so model cache persists in volume state.
+- The image sets `OLLAMA_MODELS=/llama_lab/state/ollama/models`.
+- `docker-compose.yml` bind-mounts `${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}` to that path so models persist across container rebuilds and recreates.
 - Ollama API can be exposed by uncommenting `11434:11434` in `docker-compose.yml`.
+
+Create the shared models directory once before first run:
+
+```bash
+mkdir -p share/ollama/models
+```
 
 ## Data and Volumes
 
@@ -98,6 +106,10 @@ Named volumes map to:
 - `/llama_lab/config`
 - `/llama_lab/logs`
 - `/llama_lab/state`
+
+Host bind mount:
+
+- `${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}` -> `/llama_lab/state/ollama/models`
 
 Important files:
 
