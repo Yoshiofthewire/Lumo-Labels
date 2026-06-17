@@ -16,6 +16,9 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://127.0.0.1:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
       TUNING_FILE: ${TUNING_FILE:-/llama_lab/config/TUNING.md}
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     volumes:
       - llama_config:/llama_lab/config
       - llama_private:/llama_lab/private
