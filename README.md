@@ -89,7 +89,7 @@ Primary variables:
 
 Notes:
 
-- The image sets `OLLAMA_MODELS=/llama_lab/state/ollama/models`.
+- The image sets `OLLAMA_MODELS=/llama_lab/ollama-models`.
 - `docker-compose.yml` bind-mounts `${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}` to that path so models persist across container rebuilds and recreates.
 - Ollama API can be exposed by uncommenting `11434:11434` in `docker-compose.yml`.
 
@@ -109,7 +109,7 @@ Named volumes map to:
 
 Host bind mount:
 
-- `${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}` -> `/llama_lab/state/ollama/models`
+- `${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}` -> `/llama_lab/ollama-models`
 
 Important files:
 
@@ -119,7 +119,7 @@ Important files:
 - `/llama_lab/config/TUNING.md`
 - `/llama_lab/state/state.json`
 - `/llama_lab/state/decisions.json`
-- `/llama_lab/state/ollama/models/*`
+- `/llama_lab/ollama-models/*`
 
 ## UI Pages
 

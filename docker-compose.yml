@@ -21,7 +21,7 @@ services:
       - llama_private:/llama_lab/private
       - llama_logs:/llama_lab/logs
       - llama_state:/llama_lab/state
-      - ${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}:/llama_lab/state/ollama/models
+      - ${OLLAMA_MODELS_HOST_DIR:-./share/ollama/models}:/llama_lab/ollama-models
     restart: unless-stopped
 
 volumes:

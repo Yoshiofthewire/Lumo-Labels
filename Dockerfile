@@ -37,12 +37,12 @@ ENV WEB_PORT=5866
 ENV TZ=America/New_York
 ENV OLLAMA_BASE_URL=http://127.0.0.1:11434
 ENV OLLAMA_MODEL=qwen3:1.7b
-ENV OLLAMA_MODELS=/llama_lab/state/ollama/models
+ENV OLLAMA_MODELS=/llama_lab/ollama-models
 ENV PROTON_PRIVATE_KEY_FILE=/llama_lab/private/proton-private-key.asc
 ENV PROTON_PRIVATE_KEY_PASSWORD_FILE=/llama_lab/private/proton-private-key-password
 
 RUN mkdir -p /llama_lab/config /llama_lab/private /llama_lab/logs /llama_lab/state \
-	&& mkdir -p /llama_lab/state/ollama/models \
+	&& mkdir -p /llama_lab/ollama-models \
 	&& chown -R llamalab:llamalab /llama_lab /opt/llama-lab
 
 VOLUME ["/llama_lab/config", "/llama_lab/private", "/llama_lab/logs", "/llama_lab/state"]
