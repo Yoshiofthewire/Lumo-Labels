@@ -115,7 +115,17 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	pc.AddAuthHandler(func(a protonapi.Auth) {
 		_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
 		c.persistRotatedCookies()
+		c.mu.Lock()
+		c.tokenFileMTime = readTokenFileModTime()
+		c.mu.Unlock()
 	})
+	// Advance tokenFileMTime so reloadClientOnTokenFileChange does not re-trigger
+	// on the mtime change we just created, which would null the client and
+	// immediately force another refresh, burning the just-issued token.
+	c.mu.Lock()
+	c.tokenFileMTime = readTokenFileModTime()
+	c.mu.Unlock()
+
 	pc.AddDeauthHandler(func() {
 		c.mu.Lock()
 		c.client = nil
