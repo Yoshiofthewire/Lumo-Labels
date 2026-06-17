@@ -309,9 +309,13 @@ func (c *APIClient) listUnreadInboxOnce(ctx context.Context, sinceCheckpoint str
 			if decryptConfigured {
 				decrypted, err := decrypter.Decrypt(full.Body)
 				if err != nil {
-					return nil, "", fmt.Errorf("decrypt proton message %s: %w", full.ID, err)
+					// Keep the sweep alive if one message cannot be decrypted with the
+					// currently uploaded secret key. Subject/sender are still usable for
+					// classification, so a single bad body should not stop the inbox pass.
+					msg.Body = ""
+				} else {
+					msg.Body = htmlToText(decrypted)
 				}
-				msg.Body = htmlToText(decrypted)
 			} else {
 				// Without a configured private key, avoid sending raw ciphertext to Llama.
 				msg.Body = ""
