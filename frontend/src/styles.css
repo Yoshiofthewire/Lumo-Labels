@@ -1,10 +1,10 @@
 :root {
-  --bg: #130a1f;
-  --panel: #231337;
-  --ink: #f2eaff;
-  --accent: #9f67ff;
-  --accent-soft: #4f2e76;
-  --line: #7a52b3;
+  --bg: #f3e7d3;
+  --panel: #ead7bd;
+  --ink: #3b2b1c;
+  --accent: #b78552;
+  --accent-soft: #d6b48a;
+  --line: #c9a77f;
   --mono: "IBM Plex Mono", monospace;
   --sans: "Space Grotesk", sans-serif;
 }
@@ -17,7 +17,7 @@ body {
   margin: 0;
   font-family: var(--sans);
   color: var(--ink);
-  background: radial-gradient(circle at top right, #4f2e76, transparent 45%), var(--bg);
+  background: radial-gradient(circle at top right, #dcc3a3, transparent 45%), var(--bg);
 }
 
 .shell {
@@ -29,7 +29,7 @@ body {
 .sidebar {
   border-right: 1px solid var(--line);
   padding: 20px;
-  background: linear-gradient(180deg, #2a1843, #130a1f);
+  background: linear-gradient(180deg, #e1c6a2, #f3e7d3);
   display: flex;
   flex-direction: column;
 }
@@ -71,7 +71,7 @@ body {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(79, 46, 118, 0.38);
+  background: rgba(183, 133, 82, 0.2);
 }
 
 .session-meta p {
@@ -103,7 +103,7 @@ body {
   border-radius: 14px;
   padding: 18px;
   margin-bottom: 18px;
-  box-shadow: 0 8px 30px rgba(8, 4, 16, 0.45);
+  box-shadow: 0 8px 30px rgba(59, 43, 28, 0.18);
 }
 
 .auth-form {
@@ -121,6 +121,8 @@ input {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
+  background: var(--panel);
+  color: var(--ink);
   font: inherit;
 }
 
@@ -167,7 +169,7 @@ pre {
 .log-line { color: var(--ink); }
 .log-error { color: #ff6b6b; }
 .log-warn  { color: #ffcc66; }
-.log-info  { color: #9f67ff; opacity: 0.9; }
+.log-info  { color: var(--accent); opacity: 0.9; }
 .log-debug { color: #888; }
 
 .health-head {
@@ -234,7 +236,7 @@ pre {
 .health-card {
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(19, 10, 31, 0.4);
+  background: rgba(243, 231, 211, 0.65);
   padding: 12px;
 }
 

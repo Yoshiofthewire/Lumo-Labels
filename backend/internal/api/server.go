@@ -366,12 +366,7 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to encode proton auth output", http.StatusInternalServerError)
 			return
 		}
-		tmpPath := s.protonAuthPath + ".tmp"
-		if err := os.WriteFile(tmpPath, content, 0o600); err != nil {
-			http.Error(w, "failed to write proton auth file", http.StatusInternalServerError)
-			return
-		}
-		if err := os.Rename(tmpPath, s.protonAuthPath); err != nil {
+		if err := atomicWritePrivateFile(s.protonAuthPath, content); err != nil {
 			http.Error(w, "failed to finalize proton auth file", http.StatusInternalServerError)
 			return
 		}
@@ -1182,4 +1177,32 @@ func randomToken(size int) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", b), nil
+}
+
+func atomicWritePrivateFile(path string, payload []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, base+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

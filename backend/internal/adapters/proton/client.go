@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -442,11 +443,7 @@ func writeCookieFile(cookies []protonCookie) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicWritePrivateFile(path, b)
 }
 
 func isOutOfDateError(err error) bool {
@@ -648,12 +645,37 @@ func writeTokenFile(uid, acc, ref string) error {
 		return err
 	}
 
-	// Write atomically via a temp file so a crash mid-write never corrupts the credential file.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0600); err != nil {
+	// Write atomically via a unique temp file so concurrent writers (api + daemon)
+	// do not clobber each other's staged content.
+	return atomicWritePrivateFile(path, b)
+}
+
+func atomicWritePrivateFile(path string, payload []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp, err := os.CreateTemp(dir, base+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func (c *APIClient) ensureLabelID(ctx context.Context, name string) (string, error) {
