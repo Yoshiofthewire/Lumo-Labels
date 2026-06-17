@@ -380,10 +380,12 @@ func buildRuntimePrompt(tuningTemplate string, allowedLabels []string, sender, s
 // ParseAllowedLabels extracts the bullet-list items under the "## Allowed Labels" heading from a TUNING.md document.
 func ParseAllowedLabels(text string) []string {
 	var labels []string
+	seen := map[string]bool{}
 	inSection := false
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## Allowed Labels") {
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(trimmed, "## ") && strings.Contains(lower, "allowed labels") {
 			inSection = true
 			continue
 		}
@@ -393,6 +395,11 @@ func ParseAllowedLabels(text string) []string {
 			}
 			if strings.HasPrefix(trimmed, "- ") {
 				if label := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); label != "" {
+					key := strings.ToLower(label)
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
 					labels = append(labels, label)
 				}
 			}
