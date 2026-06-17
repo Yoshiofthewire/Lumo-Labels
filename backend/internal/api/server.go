@@ -44,7 +44,7 @@ type Server struct {
 	logPath        string
 	adminPath      string
 	tuningPath     string
-	llamaAuthPath   string
+	llamaAuthPath  string
 	protonAuthPath string
 	protonKeyPath  string
 	protonPassPath string
@@ -377,6 +377,10 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to finalize proton auth file", http.StatusInternalServerError)
 			return
 		}
+		if err := atomicWritePrivateFile(protonTokenSnapshotPath(s.protonAuthPath), content); err != nil {
+			http.Error(w, "failed to finalize proton auth snapshot", http.StatusInternalServerError)
+			return
+		}
 
 		llamaAuthUpdated := false
 		llamaAuthError := ""
@@ -414,9 +418,9 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"path":             s.protonAuthPath,
 			"filename":         header.Filename,
 			"conversionMethod": "cookie-extract",
-			"llamaAuthPath":     s.llamaAuthPath,
-			"llamaAuthUpdated":  llamaAuthUpdated,
-			"llamaAuthError":    llamaAuthError,
+			"llamaAuthPath":    s.llamaAuthPath,
+			"llamaAuthUpdated": llamaAuthUpdated,
+			"llamaAuthError":   llamaAuthError,
 			"restartRequested": restartRequested,
 			"nextAction":       nextAction,
 		})
@@ -1295,6 +1299,10 @@ func atomicWritePrivateFile(path string, payload []byte) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+func protonTokenSnapshotPath(path string) string {
+	return path + ".last-good"
 }
 
 func fileSizeOrZero(info os.FileInfo) int64 {

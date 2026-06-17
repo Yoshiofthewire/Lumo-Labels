@@ -211,8 +211,28 @@ func (c *APIClient) reloadClientOnTokenFileChange() {
 		return
 	}
 
+	// Only swap clients when the updated file actually has usable token fields.
+	// This prevents a malformed/partial write from dropping a currently healthy
+	// in-memory client and causing avoidable auth failures mid-run.
+	if _, _, _, err := readTokenFile(); err != nil {
+		return
+	}
+
+	cookies := loadProtonCookies()
+	jar := buildCookieJar(cookies)
+	version := ""
+	if len(c.versions) > 0 {
+		if c.versionIdx < 0 || c.versionIdx >= len(c.versions) {
+			c.versionIdx = 0
+		}
+		version = c.versions[c.versionIdx]
+	}
+
 	// Force a clean client rebuild from the latest token file on next ensureClient.
 	c.tokenFileMTime = modTime
+	c.cookieMeta = cookies
+	c.jar = jar
+	c.mgr = newManager(c.host, version, c.jar)
 	c.client = nil
 	c.labelByKey = map[string]string{}
 	c.skipRefresh = false
@@ -477,6 +497,11 @@ func (c *APIClient) persistRotatedCookies() {
 }
 
 func writeCookieFile(cookies []protonCookie) error {
+	// Never create/overwrite the auth file with cookies alone.
+	// If token fields are unavailable, skip persistence and keep runtime alive.
+	if _, _, _, err := readTokenFile(); err != nil {
+		return err
+	}
 	return updateTokenFile(func(existing map[string]any) {
 		existing["cookies"] = cookies
 		existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
@@ -645,22 +670,47 @@ func tokenFilePath() string {
 	return "/llama_lab/config/proton-auth.json"
 }
 
-func readTokenFile() (string, string, string, error) {
-	b, err := os.ReadFile(tokenFilePath())
+func tokenSnapshotFilePath(path string) string {
+	return path + ".last-good"
+}
+
+func hasTokenFields(tf tokenFile) bool {
+	return strings.TrimSpace(tf.UID) != "" &&
+		strings.TrimSpace(tf.AccessToken) != "" &&
+		strings.TrimSpace(tf.RefreshToken) != ""
+}
+
+func readTokenFileFromPath(path string) (string, string, string, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", "", errors.New("failed to read proton auth file")
+		return "", "", "", fmt.Errorf("failed to read proton auth file")
 	}
 	var tf tokenFile
 	if err := json.Unmarshal(b, &tf); err != nil {
-		return "", "", "", errors.New("failed to parse proton auth file")
+		return "", "", "", fmt.Errorf("failed to parse proton auth file")
 	}
-	uid := strings.TrimSpace(tf.UID)
-	acc := strings.TrimSpace(tf.AccessToken)
-	ref := strings.TrimSpace(tf.RefreshToken)
-	if uid == "" || acc == "" || ref == "" {
-		return "", "", "", errors.New("proton auth file missing uid/accessToken/refreshToken")
+	if !hasTokenFields(tf) {
+		return "", "", "", fmt.Errorf("proton auth file missing uid/accessToken/refreshToken")
 	}
-	return uid, acc, ref, nil
+	return strings.TrimSpace(tf.UID), strings.TrimSpace(tf.AccessToken), strings.TrimSpace(tf.RefreshToken), nil
+}
+
+func readTokenFile() (string, string, string, error) {
+	path := tokenFilePath()
+	uid, acc, ref, err := readTokenFileFromPath(path)
+	if err == nil {
+		return uid, acc, ref, nil
+	}
+
+	// Fallback to last-known-good snapshot when the live auth file is temporarily
+	// malformed or mid-rotation.
+	snapshotPath := tokenSnapshotFilePath(path)
+	suid, sacc, sref, snapshotErr := readTokenFileFromPath(snapshotPath)
+	if snapshotErr == nil {
+		return suid, sacc, sref, nil
+	}
+
+	return "", "", "", err
 }
 
 func writeTokenFile(uid, acc, ref string) error {
@@ -706,7 +756,19 @@ func updateTokenFile(mutate func(existing map[string]any)) error {
 	}
 
 	// Atomic replace while holding the inter-process lock.
-	return atomicWritePrivateFile(path, b)
+	if err := atomicWritePrivateFile(path, b); err != nil {
+		return err
+	}
+
+	// Keep a last-known-good snapshot when token fields are present.
+	var tf tokenFile
+	if err := json.Unmarshal(b, &tf); err == nil && hasTokenFields(tf) {
+		if err := atomicWritePrivateFile(tokenSnapshotFilePath(path), b); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func atomicWritePrivateFile(path string, payload []byte) error {
