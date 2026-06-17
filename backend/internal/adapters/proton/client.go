@@ -39,18 +39,19 @@ type Client interface {
 const proactiveRefreshInterval = 1 * time.Hour
 
 type APIClient struct {
-	mu            sync.Mutex
-	mgr           *protonapi.Manager
-	client        *protonapi.Client
-	labelByKey    map[string]string
-	host          string
-	versions      []string
-	versionIdx    int
-	skipRefresh   bool
-	lastRefreshAt time.Time
-	nextRefreshAt time.Time
-	jar           http.CookieJar
-	cookieMeta    []protonCookie
+	mu             sync.Mutex
+	mgr            *protonapi.Manager
+	client         *protonapi.Client
+	labelByKey     map[string]string
+	tokenFileMTime time.Time
+	host           string
+	versions       []string
+	versionIdx     int
+	skipRefresh    bool
+	lastRefreshAt  time.Time
+	nextRefreshAt  time.Time
+	jar            http.CookieJar
+	cookieMeta     []protonCookie
 }
 
 type tokenFile struct {
@@ -73,11 +74,13 @@ type protonCookie struct {
 func NewAPIClientFromEnv() *APIClient {
 	host := strings.TrimSpace(os.Getenv("PROTON_API_HOST"))
 	versions := protonAppVersionsFromEnv()
+	modTime := readTokenFileModTime()
 	client := &APIClient{
-		host:       host,
-		versions:   versions,
-		versionIdx: 0,
-		labelByKey: map[string]string{},
+		host:           host,
+		versions:       versions,
+		versionIdx:     0,
+		labelByKey:     map[string]string{},
+		tokenFileMTime: modTime,
 	}
 	client.cookieMeta = loadProtonCookies()
 	client.jar = buildCookieJar(client.cookieMeta)
@@ -126,6 +129,9 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 }
 
 func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string) ([]Message, string, error) {
+	// Pick up new auth uploads without requiring a daemon/server restart.
+	c.reloadClientOnTokenFileChange()
+
 	// Proactive refresh: best-effort. A fresh browser-extracted token may not
 	// be refreshable via the API client (different ClientID / App-Version), so
 	// fall back to using stored credentials directly on failure rather than
@@ -182,6 +188,34 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 	}
 
 	return nil, "", lastErr
+}
+
+func readTokenFileModTime() time.Time {
+	info, err := os.Stat(tokenFilePath())
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime().UTC()
+}
+
+func (c *APIClient) reloadClientOnTokenFileChange() {
+	modTime := readTokenFileModTime()
+	if modTime.IsZero() {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !modTime.After(c.tokenFileMTime) {
+		return
+	}
+
+	// Force a clean client rebuild from the latest token file on next ensureClient.
+	c.tokenFileMTime = modTime
+	c.client = nil
+	c.labelByKey = map[string]string{}
+	c.skipRefresh = false
+	c.nextRefreshAt = time.Time{}
 }
 
 func (c *APIClient) listUnreadInboxOnce(ctx context.Context, sinceCheckpoint string) ([]Message, string, error) {
