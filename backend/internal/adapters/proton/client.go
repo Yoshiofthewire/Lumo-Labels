@@ -707,7 +707,9 @@ func (c *APIClient) ensureLabelID(ctx context.Context, name string) (string, err
 	}
 	c.mu.Unlock()
 
-	labels, err := pc.GetLabels(ctx, protonapi.LabelTypeLabel, protonapi.LabelTypeFolder)
+	// Only resolve user labels here. Using folder IDs with LabelMessages can
+	// report success without attaching a visible label in Proton Mail.
+	labels, err := pc.GetLabels(ctx, protonapi.LabelTypeLabel)
 	if err != nil {
 		return "", err
 	}
@@ -717,6 +719,18 @@ func (c *APIClient) ensureLabelID(ctx context.Context, name string) (string, err
 			c.labelByKey[key] = label.ID
 			c.mu.Unlock()
 			return label.ID, nil
+		}
+	}
+
+	// If the same name exists as a folder, fail clearly instead of caching a
+	// folder ID and silently no-op'ing label application.
+	folders, err := pc.GetLabels(ctx, protonapi.LabelTypeFolder)
+	if err != nil {
+		return "", err
+	}
+	for _, folder := range folders {
+		if strings.EqualFold(folder.Name, name) {
+			return "", fmt.Errorf("%q exists as a folder in Proton; create a label with a distinct name", name)
 		}
 	}
 
