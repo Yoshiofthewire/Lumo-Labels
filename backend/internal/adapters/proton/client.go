@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	protonapi "github.com/ProtonMail/go-proton-api"
@@ -476,20 +477,10 @@ func (c *APIClient) persistRotatedCookies() {
 }
 
 func writeCookieFile(cookies []protonCookie) error {
-	path := tokenFilePath()
-
-	existing := map[string]any{}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &existing)
-	}
-	existing["cookies"] = cookies
-	existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
-
-	b, err := json.MarshalIndent(existing, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWritePrivateFile(path, b)
+	return updateTokenFile(func(existing map[string]any) {
+		existing["cookies"] = cookies
+		existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	})
 }
 
 func isOutOfDateError(err error) bool {
@@ -673,26 +664,48 @@ func readTokenFile() (string, string, string, error) {
 }
 
 func writeTokenFile(uid, acc, ref string) error {
-	path := tokenFilePath()
+	return updateTokenFile(func(existing map[string]any) {
+		existing["uid"] = uid
+		existing["accessToken"] = acc
+		existing["refreshToken"] = ref
+		existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	})
+}
 
-	// Read existing file to preserve any extra metadata fields (source, clientID, etc.).
+func updateTokenFile(mutate func(existing map[string]any)) error {
+	path := tokenFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	lockPath := path + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	}()
+
+	// Preserve extra metadata fields (source, clientID, cookies, etc.).
 	existing := map[string]any{}
 	if b, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(b, &existing)
 	}
 
-	existing["uid"] = uid
-	existing["accessToken"] = acc
-	existing["refreshToken"] = ref
-	existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	mutate(existing)
 
 	b, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	// Write atomically via a unique temp file so concurrent writers (api + daemon)
-	// do not clobber each other's staged content.
+	// Atomic replace while holding the inter-process lock.
 	return atomicWritePrivateFile(path, b)
 }
 
