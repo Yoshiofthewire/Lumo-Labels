@@ -667,9 +667,8 @@ func (s *Server) handleLumoTest(w http.ResponseWriter, r *http.Request) {
 		allowed = []string{"Questionable", "Important"}
 	}
 
-	guardrail := lumo.LoadGuardrailText()
 	tuning := lumo.LoadTuningText()
-	client := lumo.NewHTTPClient(baseURL, apiKey, path, guardrail, tuning, 120*time.Second)
+	client := lumo.NewHTTPClient(baseURL, apiKey, path, tuning, 120*time.Second)
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 

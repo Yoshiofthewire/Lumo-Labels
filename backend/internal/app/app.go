@@ -187,9 +187,8 @@ func newLumoClient(cfg config.Config) lumo.Client {
 	if classifyPath == "" {
 		classifyPath = "/api/generate"
 	}
-	guardrail := lumo.LoadGuardrailText()
 	tuning := lumo.LoadTuningText()
-	return lumo.NewHTTPClient(baseURL, apiKey, classifyPath, guardrail, tuning, 3*time.Minute)
+	return lumo.NewHTTPClient(baseURL, apiKey, classifyPath, tuning, 3*time.Minute)
 }
 
 func newProtonClient() proton.Client {

@@ -56,7 +56,7 @@ type HTTPClient struct {
 	lastClassify time.Time
 }
 
-func NewHTTPClient(baseURL, _apiKey, path, guardrail, tuning string, timeout time.Duration) *HTTPClient {
+func NewHTTPClient(baseURL, _apiKey, path, tuning string, timeout time.Duration) *HTTPClient {
 	if timeout <= 0 {
 		timeout = 20 * time.Second
 	}
@@ -71,20 +71,14 @@ func NewHTTPClient(baseURL, _apiKey, path, guardrail, tuning string, timeout tim
 		model = "qwen3:1.7b"
 	}
 
-	systemParts := make([]string, 0, 2)
-	if g := strings.TrimSpace(guardrail); g != "" {
-		systemParts = append(systemParts, g)
-	}
-	if t := strings.TrimSpace(tuning); t != "" {
-		systemParts = append(systemParts, t)
-	}
+	systemPrompt := strings.TrimSpace(tuning)
 
 	return &HTTPClient{
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		path:         path,
 		model:        model,
 		client:       &http.Client{Timeout: timeout},
-		systemPrompt: strings.Join(systemParts, "\n\n"),
+		systemPrompt: systemPrompt,
 	}
 }
 
