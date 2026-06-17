@@ -30,6 +30,7 @@ RUN chmod +x /opt/lumo-lab/scripts/*.sh
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
 ENV CONFIG_DIR=/lumo_lab/config
+ENV SECRET_DIR=/lumo_lab/private
 ENV LOG_DIR=/lumo_lab/logs
 ENV STATE_DIR=/lumo_lab/state
 ENV WEB_PORT=5866
@@ -37,12 +38,14 @@ ENV TZ=America/New_York
 ENV OLLAMA_BASE_URL=http://127.0.0.1:11434
 ENV OLLAMA_MODEL=qwen3:1.7b
 ENV OLLAMA_MODELS=/lumo_lab/state/ollama/models
+ENV PROTON_PRIVATE_KEY_FILE=/lumo_lab/private/proton-private-key.asc
+ENV PROTON_PRIVATE_KEY_PASSWORD_FILE=/lumo_lab/private/proton-private-key-password
 
-RUN mkdir -p /lumo_lab/config /lumo_lab/logs /lumo_lab/state \
+RUN mkdir -p /lumo_lab/config /lumo_lab/private /lumo_lab/logs /lumo_lab/state \
 	&& mkdir -p /lumo_lab/state/ollama/models \
 	&& chown -R lumolab:lumolab /lumo_lab /opt/lumo-lab
 
-VOLUME ["/lumo_lab/config", "/lumo_lab/logs", "/lumo_lab/state"]
+VOLUME ["/lumo_lab/config", "/lumo_lab/private", "/lumo_lab/logs", "/lumo_lab/state"]
 EXPOSE 5866
 
 CMD ["/opt/lumo-lab/scripts/entrypoint.sh"]

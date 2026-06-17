@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,18 +46,23 @@ type Server struct {
 	tuningPath     string
 	lumoAuthPath   string
 	protonAuthPath string
+	protonKeyPath  string
+	protonPassPath string
 	proton         proton.Client
 	sessions       map[string]time.Time
 }
 
 func NewServer(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service, protonClient proton.Client) *Server {
+	secretDir := envOrDefault("SECRET_DIR", "/lumo_lab/private")
 	configPath := filepath.Join(envOrDefault("CONFIG_DIR", "/lumo_lab/config"), "config.yaml")
 	logPath := filepath.Join(envOrDefault("LOG_DIR", "/lumo_lab/logs"), "app.log")
 	adminPath := filepath.Join(envOrDefault("CONFIG_DIR", "/lumo_lab/config"), "admin.env")
 	tuningPath := resolveTuningPath()
 	lumoAuthPath := envOrDefault("LUMO_AUTH_FILE", "/lumo_lab/config/lumo-auth.json")
 	protonAuthPath := envOrDefault("PROTON_AUTH_FILE", "/lumo_lab/config/proton-auth.json")
-	return &Server{cfg: cfg, logger: logger, store: store, health: healthSvc, configPath: configPath, logPath: logPath, adminPath: adminPath, tuningPath: tuningPath, lumoAuthPath: lumoAuthPath, protonAuthPath: protonAuthPath, proton: protonClient, sessions: map[string]time.Time{}}
+	protonKeyPath := envOrDefault("PROTON_PRIVATE_KEY_FILE", filepath.Join(secretDir, "proton-private-key.asc"))
+	protonPassPath := envOrDefault("PROTON_PRIVATE_KEY_PASSWORD_FILE", filepath.Join(secretDir, "proton-private-key-password"))
+	return &Server{cfg: cfg, logger: logger, store: store, health: healthSvc, configPath: configPath, logPath: logPath, adminPath: adminPath, tuningPath: tuningPath, lumoAuthPath: lumoAuthPath, protonAuthPath: protonAuthPath, protonKeyPath: protonKeyPath, protonPassPath: protonPassPath, proton: protonClient, sessions: map[string]time.Time{}}
 }
 
 func (s *Server) Run() error {
@@ -75,6 +81,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/logs/list", s.withAuth(s.handleLogsList))
 	mux.HandleFunc("/api/lumo/auth", s.withAuth(s.handleLumoAuth))
 	mux.HandleFunc("/api/proton/auth", s.withAuth(s.handleProtonAuth))
+	mux.HandleFunc("/api/proton/private-key", s.withAuth(s.handleProtonPrivateKey))
 	mux.HandleFunc("/api/lumo/test", s.withAuth(s.handleLumoTest))
 	mux.HandleFunc("/api/tuning", s.withAuth(s.handleTuning))
 	mux.HandleFunc("/api/setup", s.handleSetup)
@@ -412,6 +419,90 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"lumoAuthError":    lumoAuthError,
 			"restartRequested": restartRequested,
 			"nextAction":       nextAction,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleProtonPrivateKey(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		keyInfo, keyErr := os.Stat(s.protonKeyPath)
+		passInfo, passErr := os.Stat(s.protonPassPath)
+		if keyErr != nil && !errors.Is(keyErr, os.ErrNotExist) {
+			http.Error(w, "failed to read proton private key status", http.StatusInternalServerError)
+			return
+		}
+		if passErr != nil && !errors.Is(passErr, os.ErrNotExist) {
+			http.Error(w, "failed to read proton private key password status", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"keyExists":          keyErr == nil,
+			"keyPath":            s.protonKeyPath,
+			"keySize":            fileSizeOrZero(keyInfo),
+			"keyModifiedAt":      fileTimeOrEmpty(keyInfo),
+			"passwordExists":     passErr == nil,
+			"passwordPath":       s.protonPassPath,
+			"passwordModifiedAt": fileTimeOrEmpty(passInfo),
+			"decryptReady":       keyErr == nil && passErr == nil,
+		})
+	case http.MethodPost:
+		if err := r.ParseMultipartForm(16 << 20); err != nil {
+			http.Error(w, "invalid multipart request", http.StatusBadRequest)
+			return
+		}
+
+		password := strings.TrimSpace(r.FormValue("password"))
+		file, header, err := r.FormFile("keyFile")
+		hasFile := err == nil
+		if err != nil && !errors.Is(err, http.ErrMissingFile) {
+			http.Error(w, "failed to read private key file", http.StatusBadRequest)
+			return
+		}
+		if !hasFile && password == "" {
+			http.Error(w, "keyFile or password is required", http.StatusBadRequest)
+			return
+		}
+		if hasFile {
+			defer file.Close()
+		}
+
+		if hasFile {
+			payload, readErr := io.ReadAll(io.LimitReader(file, 16<<20))
+			if readErr != nil {
+				http.Error(w, "failed to read private key file", http.StatusBadRequest)
+				return
+			}
+			if len(strings.TrimSpace(string(payload))) == 0 {
+				http.Error(w, "private key file is empty", http.StatusBadRequest)
+				return
+			}
+			if !strings.Contains(string(payload), "-----BEGIN PGP PRIVATE KEY BLOCK-----") {
+				http.Error(w, "private key file is not an armored Proton private key", http.StatusBadRequest)
+				return
+			}
+			if err := atomicWritePrivateFile(s.protonKeyPath, payload); err != nil {
+				http.Error(w, "failed to save private key file", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if password != "" {
+			if err := atomicWritePrivateFile(s.protonPassPath, []byte(password)); err != nil {
+				http.Error(w, "failed to save private key password", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":              true,
+			"keyPath":         s.protonKeyPath,
+			"passwordPath":    s.protonPassPath,
+			"filename":        uploadedFilename(header),
+			"passwordUpdated": password != "",
+			"decryptReady":    protonPrivateKeyReady(s.protonKeyPath, s.protonPassPath),
 		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1204,4 +1295,35 @@ func atomicWritePrivateFile(path string, payload []byte) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+func fileSizeOrZero(info os.FileInfo) int64 {
+	if info == nil {
+		return 0
+	}
+	return info.Size()
+}
+
+func fileTimeOrEmpty(info os.FileInfo) string {
+	if info == nil {
+		return ""
+	}
+	return info.ModTime().UTC().Format(time.RFC3339)
+}
+
+func uploadedFilename(header *multipart.FileHeader) string {
+	if header == nil {
+		return ""
+	}
+	return header.Filename
+}
+
+func protonPrivateKeyReady(keyPath, passwordPath string) bool {
+	if _, err := os.Stat(keyPath); err != nil {
+		return false
+	}
+	if _, err := os.Stat(passwordPath); err != nil {
+		return false
+	}
+	return true
 }

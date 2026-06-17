@@ -10,16 +10,21 @@ services:
       TZ: ${TZ:-America/New_York}
       PROTON_API_HOST: ${PROTON_API_HOST:-}
       PROTON_AUTH_FILE: ${PROTON_AUTH_FILE:-/lumo_lab/config/proton-auth.json}
+      SECRET_DIR: ${SECRET_DIR:-/lumo_lab/private}
+      PROTON_PRIVATE_KEY_FILE: ${PROTON_PRIVATE_KEY_FILE:-/lumo_lab/private/proton-private-key.asc}
+      PROTON_PRIVATE_KEY_PASSWORD_FILE: ${PROTON_PRIVATE_KEY_PASSWORD_FILE:-/lumo_lab/private/proton-private-key-password}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://127.0.0.1:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
       TUNING_FILE: ${TUNING_FILE:-/lumo_lab/config/TUNING.md}
     volumes:
       - lumo_config:/lumo_lab/config
+      - lumo_private:/lumo_lab/private
       - lumo_logs:/lumo_lab/logs
       - lumo_state:/lumo_lab/state
     restart: unless-stopped
 
 volumes:
   lumo_config:
+  lumo_private:
   lumo_logs:
   lumo_state:

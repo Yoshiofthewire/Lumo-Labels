@@ -16,6 +16,7 @@ import (
 	"time"
 
 	protonapi "github.com/ProtonMail/go-proton-api"
+	pgpcrypto "github.com/ProtonMail/gopenpgp/v2/crypto"
 )
 
 type Message struct {
@@ -211,6 +212,10 @@ func (c *APIClient) listUnreadInboxOnce(ctx context.Context, sinceCheckpoint str
 
 	out := make([]Message, 0, len(ids))
 	fallbackUnreadInbox := make([]Message, 0, len(ids))
+	decrypter, decryptConfigured, err := loadMessageDecrypter()
+	if err != nil {
+		return nil, "", err
+	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			break
@@ -235,10 +240,17 @@ func (c *APIClient) listUnreadInboxOnce(ctx context.Context, sinceCheckpoint str
 			Sender:  sender,
 			Body:    htmlToText(full.Body),
 		}
-		// Body contains PGP-armored ciphertext; skip it rather than sending
-		// the raw blob to Lumo. Classification uses Subject + Sender instead.
 		if isPGPArmored(full.Body) {
-			msg.Body = ""
+			if decryptConfigured {
+				decrypted, err := decrypter.Decrypt(full.Body)
+				if err != nil {
+					return nil, "", fmt.Errorf("decrypt proton message %s: %w", full.ID, err)
+				}
+				msg.Body = htmlToText(decrypted)
+			} else {
+				// Without a configured private key, avoid sending raw ciphertext to Lumo.
+				msg.Body = ""
+			}
 		}
 		fallbackUnreadInbox = append(fallbackUnreadInbox, msg)
 		if hasUserLabel(full.LabelIDs) {
@@ -731,6 +743,88 @@ var tagPattern = regexp.MustCompile("<[^>]+>")
 
 func isPGPArmored(s string) bool {
 	return strings.Contains(s, "-----BEGIN PGP MESSAGE-----")
+}
+
+type messageDecrypter struct {
+	keyRing *pgpcrypto.KeyRing
+}
+
+func (d *messageDecrypter) Decrypt(armored string) (string, error) {
+	message, err := pgpcrypto.NewPGPMessageFromArmored(armored)
+	if err != nil {
+		return "", err
+	}
+	plain, err := d.keyRing.Decrypt(message, nil, 0)
+	if err != nil {
+		return "", err
+	}
+	return plain.GetString(), nil
+}
+
+func loadMessageDecrypter() (*messageDecrypter, bool, error) {
+	keyPath := protonPrivateKeyPath()
+	passwordPath := protonPrivateKeyPasswordPath()
+
+	keyPayload, err := os.ReadFile(keyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read proton private key: %w", err)
+	}
+	passwordPayload, err := os.ReadFile(passwordPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read proton private key password: %w", err)
+	}
+
+	key, err := pgpcrypto.NewKeyFromArmored(string(keyPayload))
+	if err != nil {
+		return nil, true, fmt.Errorf("parse proton private key: %w", err)
+	}
+	locked, err := key.IsLocked()
+	if err != nil {
+		return nil, true, fmt.Errorf("inspect proton private key: %w", err)
+	}
+	if locked {
+		password := []byte(strings.TrimSpace(string(passwordPayload)))
+		if len(password) == 0 {
+			return nil, true, errors.New("proton private key password is empty")
+		}
+		key, err = key.Unlock(password)
+		if err != nil {
+			return nil, true, fmt.Errorf("unlock proton private key: %w", err)
+		}
+	}
+
+	keyRing, err := pgpcrypto.NewKeyRing(key)
+	if err != nil {
+		return nil, true, fmt.Errorf("build proton keyring: %w", err)
+	}
+	return &messageDecrypter{keyRing: keyRing}, true, nil
+}
+
+func protonPrivateKeyPath() string {
+	if path := strings.TrimSpace(os.Getenv("PROTON_PRIVATE_KEY_FILE")); path != "" {
+		return path
+	}
+	return filepath.Join(secretDirPath(), "proton-private-key.asc")
+}
+
+func protonPrivateKeyPasswordPath() string {
+	if path := strings.TrimSpace(os.Getenv("PROTON_PRIVATE_KEY_PASSWORD_FILE")); path != "" {
+		return path
+	}
+	return filepath.Join(secretDirPath(), "proton-private-key-password")
+}
+
+func secretDirPath() string {
+	if path := strings.TrimSpace(os.Getenv("SECRET_DIR")); path != "" {
+		return path
+	}
+	return "/lumo_lab/private"
 }
 
 func htmlToText(input string) string {

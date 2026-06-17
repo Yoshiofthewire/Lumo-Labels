@@ -45,6 +45,26 @@ type ProtonAuthUploadResponse = {
   error?: string;
 };
 
+type ProtonPrivateKeyStatus = {
+  keyExists: boolean;
+  keyPath: string;
+  keySize: number;
+  keyModifiedAt?: string;
+  passwordExists: boolean;
+  passwordPath: string;
+  passwordModifiedAt?: string;
+  decryptReady: boolean;
+};
+
+type ProtonPrivateKeyUploadResponse = {
+  ok: boolean;
+  keyPath: string;
+  passwordPath: string;
+  filename?: string;
+  passwordUpdated: boolean;
+  decryptReady: boolean;
+};
+
 type LumoAuthNoticeTone = "idle" | "success" | "warning" | "error";
 
 function normalizeLabelName(raw: string): string {
@@ -245,6 +265,12 @@ export function ConfigPage() {
   const [protonAuthStatus, setProtonAuthStatus] = useState("");
   const [protonAuthTone, setProtonAuthTone] = useState<LumoAuthNoticeTone>("idle");
   const [protonAuthBusy, setProtonAuthBusy] = useState(false);
+  const [protonPrivateKey, setProtonPrivateKey] = useState<ProtonPrivateKeyStatus | null>(null);
+  const [protonPrivateKeyFile, setProtonPrivateKeyFile] = useState<File | null>(null);
+  const [protonPrivateKeyPassword, setProtonPrivateKeyPassword] = useState("");
+  const [protonPrivateKeyStatus, setProtonPrivateKeyStatus] = useState("");
+  const [protonPrivateKeyTone, setProtonPrivateKeyTone] = useState<LumoAuthNoticeTone>("idle");
+  const [protonPrivateKeyBusy, setProtonPrivateKeyBusy] = useState(false);
 
   function hydrateFromTuning(content: string, fallbackLabels: string[]) {
     const parsedLabels = parsePriorityLabels(content);
@@ -280,6 +306,16 @@ export function ConfigPage() {
     }
   }
 
+  async function loadProtonPrivateKeyStatus() {
+    try {
+      const status = await getJSON<ProtonPrivateKeyStatus>("/api/proton/private-key");
+      setProtonPrivateKey(status);
+    } catch {
+      setProtonPrivateKeyTone("error");
+      setProtonPrivateKeyStatus("Failed to load Proton private key status.");
+    }
+  }
+
   function resetTuningTemplate() {
     const labels = orderedLabels.length > 0 ? orderedLabels : allLabels;
     setTuningText(buildTuningTemplate(labels, labelDefinitions));
@@ -291,9 +327,10 @@ export function ConfigPage() {
       getJSON<AppConfig>("/api/config"),
       getJSON<LabelsResponse>("/api/labels"),
 	      getJSON<TuningResponse>("/api/tuning"),
-	      getJSON<ProtonAuthStatus>("/api/proton/auth")
+	      getJSON<ProtonAuthStatus>("/api/proton/auth"),
+	      getJSON<ProtonPrivateKeyStatus>("/api/proton/private-key")
     ])
-        .then(([data, labelsData, tuningData, protonAuthData]) => {
+        .then(([data, labelsData, tuningData, protonAuthData, protonPrivateKeyData]) => {
         setCfg(data);
         const all = Array.from(new Set([...(labelsData.proton ?? []), ...(labelsData.configured ?? [])])).filter(Boolean);
         setAllLabels(all);
@@ -301,6 +338,7 @@ export function ConfigPage() {
         setTuningText(content);
         hydrateFromTuning(content, all);
         setProtonAuth(protonAuthData);
+        setProtonPrivateKey(protonPrivateKeyData);
       })
       .catch(() => setStatus("Failed to load config. Please login first."));
   }, []);
@@ -384,6 +422,10 @@ export function ConfigPage() {
     setProtonAuthFile(event.target.files?.[0] ?? null);
   }
 
+  function onProtonPrivateKeyFileChange(event: ChangeEvent<HTMLInputElement>) {
+    setProtonPrivateKeyFile(event.target.files?.[0] ?? null);
+  }
+
   async function uploadProtonAuth() {
     if (!protonAuthFile) {
       setProtonAuthTone("warning");
@@ -420,6 +462,44 @@ export function ConfigPage() {
     }
   }
 
+  async function uploadProtonPrivateKey() {
+    if (!protonPrivateKeyFile && protonPrivateKeyPassword.trim() === "") {
+      setProtonPrivateKeyTone("warning");
+      setProtonPrivateKeyStatus("Select a Proton private key file or enter the password to update the secret store.");
+      return;
+    }
+
+    const form = new FormData();
+    if (protonPrivateKeyFile) {
+      form.append("keyFile", protonPrivateKeyFile);
+    }
+    if (protonPrivateKeyPassword.trim() !== "") {
+      form.append("password", protonPrivateKeyPassword);
+    }
+
+    setProtonPrivateKeyBusy(true);
+    setProtonPrivateKeyTone("idle");
+    setProtonPrivateKeyStatus("");
+    try {
+      const result = await postFormData<ProtonPrivateKeyUploadResponse>("/api/proton/private-key", form);
+      setProtonPrivateKeyTone("success");
+      setProtonPrivateKeyStatus(
+        result.decryptReady
+          ? "Proton private key material saved. New encrypted messages will be decrypted before labeling."
+          : "Proton private key material saved, but decryption is not ready yet. Upload both the key and its password."
+      );
+      setProtonPrivateKeyFile(null);
+      setProtonPrivateKeyPassword("");
+      await loadProtonPrivateKeyStatus();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown error";
+      setProtonPrivateKeyTone("error");
+      setProtonPrivateKeyStatus(`Failed to save Proton private key material: ${msg}`);
+    } finally {
+      setProtonPrivateKeyBusy(false);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Configuration</h2>
@@ -444,6 +524,39 @@ export function ConfigPage() {
         </div>
       ) : null}
       {protonAuthStatus ? <p className={`notice notice-${protonAuthTone}`}>{protonAuthStatus}</p> : null}
+
+      <hr />
+      <h3>Proton Private Key</h3>
+      <p>Upload the exported Proton private key and the password used to unlock it. These secrets are stored in the container-only private directory, not in the general config API.</p>
+      <label>
+        <div>Private key file</div>
+        <input type="file" accept=".asc,.pgp,.txt" onChange={onProtonPrivateKeyFileChange} />
+      </label>
+      <label>
+        <div>Private key password</div>
+        <input
+          type="password"
+          value={protonPrivateKeyPassword}
+          onChange={(event) => setProtonPrivateKeyPassword(event.target.value)}
+          placeholder="Password used when exporting or unlocking the Proton private key"
+        />
+      </label>
+      <button type="button" onClick={uploadProtonPrivateKey} disabled={protonPrivateKeyBusy}>
+        {protonPrivateKeyBusy ? "Saving Proton key..." : "Save Proton Private Key"}
+      </button>
+      {protonPrivateKey ? (
+        <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, marginTop: 10, marginBottom: 10 }}>
+          <p>Private Key Present: {protonPrivateKey.keyExists ? "Yes" : "No"}</p>
+          <p>Private Key Path: {protonPrivateKey.keyPath}</p>
+          {protonPrivateKey.keyExists ? <p>Private Key Size: {protonPrivateKey.keySize} bytes</p> : null}
+          {protonPrivateKey.keyModifiedAt ? <p>Private Key Updated: {protonPrivateKey.keyModifiedAt}</p> : null}
+          <p>Password Present: {protonPrivateKey.passwordExists ? "Yes" : "No"}</p>
+          <p>Password Path: {protonPrivateKey.passwordPath}</p>
+          {protonPrivateKey.passwordModifiedAt ? <p>Password Updated: {protonPrivateKey.passwordModifiedAt}</p> : null}
+          <p>Decryption Ready: {protonPrivateKey.decryptReady ? "Yes" : "No"}</p>
+        </div>
+      ) : null}
+      {protonPrivateKeyStatus ? <p className={`notice notice-${protonPrivateKeyTone}`}>{protonPrivateKeyStatus}</p> : null}
 
       <hr />
       <h3>Test Lumo Connection</h3>
