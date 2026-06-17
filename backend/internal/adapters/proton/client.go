@@ -724,6 +724,9 @@ func readTokenFile() (string, string, string, error) {
 }
 
 func writeTokenFile(uid, acc, ref string) error {
+	if strings.TrimSpace(uid) == "" || strings.TrimSpace(acc) == "" || strings.TrimSpace(ref) == "" {
+		return nil
+	}
 	return updateTokenFile(func(existing map[string]any) {
 		existing["uid"] = uid
 		existing["accessToken"] = acc
