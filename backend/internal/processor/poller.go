@@ -173,6 +173,12 @@ func isProtonAuthUnhealthyError(err error) bool {
 	if strings.Contains(msg, "401") {
 		return true
 	}
+	if strings.Contains(msg, "invalid refresh token") {
+		return true
+	}
+	if strings.Contains(msg, "de-auth") && strings.Contains(msg, "400") {
+		return true
+	}
 	if strings.Contains(msg, "422") {
 		return true
 	}

@@ -381,6 +381,9 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to finalize proton auth snapshot", http.StatusInternalServerError)
 			return
 		}
+		if s.logger != nil {
+			s.logger.Info("proton auth upload persisted", "client_id", clientID, "cookies", strconv.Itoa(len(cookies)), "path", s.protonAuthPath)
+		}
 
 		llamaAuthUpdated := false
 		llamaAuthError := ""
