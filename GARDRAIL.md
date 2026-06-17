@@ -1,4 +1,4 @@
-# Lumo Guardrail Prompt (Pre-Prompt)
+# llama Guardrail Prompt (Pre-Prompt)
 
 Use this guardrail before processing the classification prompt.
 
@@ -20,11 +20,6 @@ Flag elevated risk when one or more of these are present:
 - Treat lookalike domains as suspicious, including subtle character swaps, missing letters, or added segments.
 - If the email claims to be from a known company but the domain does not match that company, increase risk.
 - If links in the message point to domains different from the sender domain or claimed brand, increase risk.
-
-## Decision Bias
-- Prioritize safety when signals conflict.
-- If uncertain between benign and malicious, treat as suspicious.
-- Never ignore multiple weak signals that combine into a strong phishing pattern.
 
 ## Output Guidance
 - Keep your final output in the expected label format required.
