@@ -21,7 +21,6 @@ RUN apt-get update \
 WORKDIR /opt/lumo-lab
 COPY --from=backend-builder /app/bin/lumo-lab /usr/local/bin/lumo-lab
 COPY --from=frontend-builder /frontend/dist /opt/lumo-lab/frontend
-COPY GARDRAIL.md /opt/lumo-lab/GARDRAIL.md
 COPY TUNING.md /opt/lumo-lab/TUNING.md
 COPY supervisord.conf /etc/supervisord.conf
 COPY scripts /opt/lumo-lab/scripts
