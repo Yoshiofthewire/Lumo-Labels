@@ -50,7 +50,7 @@ type HTTPClient struct {
 	model   string
 	client  *http.Client
 
-	systemPrompt string
+	tuningTemplate string
 
 	classifyMu   sync.Mutex
 	lastClassify time.Time
@@ -71,14 +71,14 @@ func NewHTTPClient(baseURL, _apiKey, path, tuning string, timeout time.Duration)
 		model = "qwen3:1.7b"
 	}
 
-	systemPrompt := strings.TrimSpace(tuning)
+	tuningTemplate := strings.TrimSpace(tuning)
 
 	return &HTTPClient{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		path:         path,
-		model:        model,
-		client:       &http.Client{Timeout: timeout},
-		systemPrompt: systemPrompt,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		path:           path,
+		model:          model,
+		client:         &http.Client{Timeout: timeout},
+		tuningTemplate: tuningTemplate,
 	}
 }
 
@@ -102,7 +102,7 @@ func (c *HTTPClient) Classify(ctx context.Context, allowedLabels []string, sende
 
 	appendLumoServerLog(fmt.Sprintf("[CLASSIFY] From: %s | Subject: [%s]", sender, subject))
 
-	prompt := buildRuntimePrompt(allowedLabels, sender, subject, body)
+	prompt := buildRuntimePrompt(c.tuningTemplate, allowedLabels, sender, subject, body)
 	for attempt := 0; attempt < 3; attempt++ {
 		result, err := c.classifyOnce(ctx, prompt)
 		if err != nil {
@@ -173,9 +173,6 @@ func (c *HTTPClient) classifyOnce(ctx context.Context, prompt string) (string, e
 		"prompt":     prompt,
 		"stream":     false,
 		"keep_alive": "10m",
-	}
-	if strings.TrimSpace(c.systemPrompt) != "" {
-		payload["system"] = c.systemPrompt
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -341,10 +338,31 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func buildRuntimePrompt(allowedLabels []string, sender, subject, body string) string {
+func buildRuntimePrompt(tuningTemplate string, allowedLabels []string, sender, subject, body string) string {
 	body = strings.TrimSpace(body)
 	sender = strings.TrimSpace(sender)
 	subject = strings.TrimSpace(subject)
+	tuningTemplate = strings.TrimSpace(tuningTemplate)
+
+	emailLines := make([]string, 0, 4)
+	if sender != "" {
+		emailLines = append(emailLines, "Email Address: "+sender)
+	}
+	if subject != "" {
+		emailLines = append(emailLines, "Subject Line: "+subject)
+	}
+	if body != "" {
+		emailLines = append(emailLines, body)
+	}
+	emailBlock := strings.TrimSpace(strings.Join(emailLines, "\n"))
+
+	if tuningTemplate != "" {
+		const placeholder = "[Insert Email Content Here]"
+		if strings.Contains(tuningTemplate, placeholder) {
+			return strings.Replace(tuningTemplate, placeholder, emailBlock, 1)
+		}
+		return strings.TrimSpace(tuningTemplate + "\n\n## 4. Input Email to Classify\n" + emailBlock)
+	}
 
 	parts := make([]string, 0, 8)
 	if len(allowedLabels) > 0 {
@@ -353,14 +371,8 @@ func buildRuntimePrompt(allowedLabels []string, sender, subject, body string) st
 		parts = append(parts, "No explanations, no markdown, no punctuation beyond the label text.")
 		parts = append(parts, "")
 	}
-	if sender != "" {
-		parts = append(parts, "Email Address: "+sender)
-	}
-	if subject != "" {
-		parts = append(parts, "Subject Line: "+subject)
-	}
-	if body != "" {
-		parts = append(parts, body)
+	if emailBlock != "" {
+		parts = append(parts, emailBlock)
 	}
 	return strings.Join(parts, "\n")
 }
