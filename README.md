@@ -4,7 +4,7 @@
 
 llama Labels is a Dockerized Proton Mail auto-labeler.
 
-It polls unread inbox mail, classifies each message with an internal Ollama model (`qwen3:1.7b` by default), and applies matching Proton labels.
+It polls unread inbox mail, classifies each message with an internal Ollama model (`smollm2:1.7b` by default), and applies matching Proton labels.
 
 ## Overview
 
