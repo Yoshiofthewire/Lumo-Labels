@@ -23,7 +23,7 @@ type Poller struct {
 	store     *state.Store
 	health    *health.Service
 	proton    proton.Client
-	llama      llama.Client
+	llama     llama.Client
 	redaction *redaction.Engine
 	cancel    context.CancelFunc
 	mu        sync.Mutex
@@ -242,8 +242,10 @@ func (p *Poller) handleMessage(ctx context.Context, msg proton.Message) error {
 	}
 	// A successful classification means Llama has credits again; clear any flag.
 	p.clearAICreditsExhausted()
+	p.log.Info("classification result", "message_id", msg.ID, "raw_label", strings.TrimSpace(label), "sender", msg.Sender, "subject", msg.Subject)
 	selected := llama.SelectLabelFromText(p.cfg.Labels.Allowlist, label)
 	if selected == "" {
+		p.log.Info("classification skipped", "message_id", msg.ID, "reason", "no known label returned", "raw_label", strings.TrimSpace(label), "allowlist_count", intToString(len(p.cfg.Labels.Allowlist)))
 		_ = p.store.AddDecision(state.Decision{
 			MessageID: msg.ID,
 			Sender:    msg.Sender,
@@ -253,9 +255,12 @@ func (p *Poller) handleMessage(ctx context.Context, msg proton.Message) error {
 		})
 		return p.store.MarkProcessed(msg.ID)
 	}
+	p.log.Info("applying label", "message_id", msg.ID, "selected_label", selected, "sender", msg.Sender, "subject", msg.Subject)
 	if err := applyLabelWithRetry(ctx, p.proton, msg.ID, selected); err != nil {
+		p.log.Error("label apply failed", "message_id", msg.ID, "selected_label", selected, "error", err.Error())
 		return err
 	}
+	p.log.Info("label applied", "message_id", msg.ID, "selected_label", selected)
 	if err := p.store.MarkProcessed(msg.ID); err != nil {
 		return err
 	}
