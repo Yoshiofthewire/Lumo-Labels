@@ -13,7 +13,7 @@ require (
 	github.com/ProtonMail/go-crypto v0.0.0-20220824120805-4b6e5c587895 // indirect
 	github.com/ProtonMail/go-mime v0.0.0-20220429130430-2192574d760f // indirect
 	github.com/ProtonMail/go-srp v0.0.5 // indirect
-	github.com/ProtonMail/gopenpgp/v2 v2.4.10 // indirect
+	github.com/ProtonMail/gopenpgp/v2 v2.4.10
 	github.com/PuerkitoBio/goquery v1.8.0 // indirect
 	github.com/andybalholm/cascadia v1.3.1 // indirect
 	github.com/bradenaw/juniper v0.8.0 // indirect
@@ -27,7 +27,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/crypto v0.53.0
 	golang.org/x/exp v0.0.0-20220827204233-334a2380cb91 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
