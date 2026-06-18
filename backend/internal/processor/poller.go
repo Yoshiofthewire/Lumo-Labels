@@ -106,6 +106,7 @@ func (p *Poller) tick() {
 	if err != nil {
 		p.log.Error("fetch unread inbox failed", "error", err.Error())
 		if isProtonAuthUnhealthyError(err) {
+			p.log.Error("proton auth unhealthy", "checkpoint", checkpoint, "hint", protonAuthTroubleshootingHint(err))
 			p.health.SetStatus(health.Status{Healthy: true, FailureReason: []string{"Proton Mail Auth Unhealthy"}})
 			return
 		}
@@ -189,6 +190,23 @@ func isProtonAuthUnhealthyError(err error) bool {
 		return true
 	}
 	return false
+}
+
+func protonAuthTroubleshootingHint(err error) string {
+	if err == nil {
+		return "Re-upload a fresh Proton mail auth file from the Config page."
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "invalid refresh token") || (strings.Contains(msg, "de-auth") && strings.Contains(msg, "400")) {
+		return "Refresh token is no longer valid; export a fresh mail_auth.json and upload it."
+	}
+	if strings.Contains(msg, "422") || strings.Contains(msg, "invalid input") || strings.Contains(msg, "out of date") {
+		return "Session/App-Version mismatch; re-export auth from Proton Mail web and upload again."
+	}
+	if strings.Contains(msg, "401") {
+		return "Access token unauthorized; upload a fresh auth file and verify system time/TZ are correct."
+	}
+	return "Re-upload a fresh Proton mail auth file and verify /llama_lab/config/proton-auth.json is parseable."
 }
 
 // recentDecisionsContext returns a short summary of the last N applied decisions to give Llama labelling context.

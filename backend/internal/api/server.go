@@ -354,12 +354,18 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		uid, access, refresh, clientID, cookies, err := extractProtonTokensFromStorageState(payload)
 		if err != nil {
+			if s.logger != nil {
+				s.logger.Error("proton auth upload parse failed", "filename", header.Filename, "bytes", strconv.Itoa(len(payload)), "error", err.Error())
+			}
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 
 		validatedUID, validatedAccess, validatedRefresh, validateErr := validateAndRotateProtonAuth(r.Context(), uid, refresh, cookies)
 		if validateErr != nil {
+			if s.logger != nil {
+				s.logger.Error("proton auth upload validation failed", "filename", header.Filename, "client_id", clientID, "cookie_count", strconv.Itoa(len(cookies)), "uid_present", strconv.FormatBool(strings.TrimSpace(uid) != ""), "error", validateErr.Error())
+			}
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "uploaded Proton session is not refreshable; please export a fresh mail auth file and try again"})
 			return
 		}
@@ -406,26 +412,40 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			} else {
 				llamaAuthUpdated = true
 			}
+			if llamaAuthError != "" && s.logger != nil {
+				s.logger.Error("llama auth mirror update failed during proton auth upload", "path", s.llamaAuthPath, "error", llamaAuthError)
+			}
 		}
 
-		restartRequested := false
-		nextAction := "Daemon restarted automatically to apply new Proton tokens."
-		if err := restartDaemonProcess(r.Context()); err != nil {
+		nextAction := "Proton tokens saved. Daemon restart has been queued to apply them."
+
+		// Restart asynchronously so the upload endpoint always returns promptly.
+		// A blocked supervisorctl call should not surface to the UI as a generic
+		// network error ("Failed to fetch").
+		go func() {
+			restartCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			if err := restartDaemonProcess(restartCtx); err == nil {
+				if s.logger != nil {
+					s.logger.Info("daemon restart requested after proton auth upload", "method", "supervisorctl restart daemon")
+				}
+				return
+			}
+
 			// supervisorctl could not restart the daemon program. Rather than killing
 			// PID 1 (which takes the whole container down and depends on an external
 			// Docker restart policy to recover), signal the daemon process directly so
 			// supervisord's autorestart respawns it. Applying new Proton tokens never
 			// requires a full container restart.
 			if signalErr := signalDaemonProcessRestart(); signalErr != nil {
-				restartRequested = true
-				nextAction = "Tokens saved, but the daemon could not be restarted automatically (" + signalErr.Error() + "). It will pick up the new tokens on its next poll, or use the repair action to restart."
 				if s.logger != nil {
 					s.logger.Error("daemon restart after proton auth update failed", "supervisorctl_error", err.Error(), "signal_error", signalErr.Error())
 				}
-			} else {
-				nextAction = "Daemon signaled to restart to apply new Proton tokens."
+			} else if s.logger != nil {
+				s.logger.Info("daemon restart requested after proton auth upload", "method", "signal daemon process")
 			}
-		}
+		}()
 
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"ok":               true,
@@ -435,7 +455,7 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			"llamaAuthPath":    s.llamaAuthPath,
 			"llamaAuthUpdated": llamaAuthUpdated,
 			"llamaAuthError":   llamaAuthError,
-			"restartRequested": restartRequested,
+			"restartRequested": false,
 			"nextAction":       nextAction,
 		})
 	default:

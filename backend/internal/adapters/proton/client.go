@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -149,6 +150,7 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 	// blocking the entire fetch.
 	if !c.shouldSkipRefresh() {
 		if err := c.refreshClient(ctx); err != nil {
+			log.Printf("proton auth: proactive refresh failed; falling back to token-file client: %v", err)
 			// Back off for one interval on any error so we do not burn through
 			// single-use Proton refresh tokens (400) or hit version mismatches (422).
 			c.mu.Lock()
@@ -162,6 +164,7 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 			c.mu.Lock()
 			uid, acc, ref, tokenErr := readTokenFile()
 			if tokenErr == nil {
+				log.Printf("proton auth: rebuilt client from token file after refresh failure; uid_present=%t access_present=%t refresh_present=%t", strings.TrimSpace(uid) != "", strings.TrimSpace(acc) != "", strings.TrimSpace(ref) != "")
 				pc := c.mgr.NewClient(uid, acc, ref)
 				pc.AddAuthHandler(func(a protonapi.Auth) {
 					_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
@@ -175,7 +178,7 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 				c.client = pc
 			} else if c.client == nil {
 				c.mu.Unlock()
-				return nil, "", fmt.Errorf("fetch unread inbox failed: %w", tokenErr)
+				return nil, "", fmt.Errorf("fetch unread inbox failed: proactive refresh failed (%v) and token file reload failed (%w)", err, tokenErr)
 			}
 			c.mu.Unlock()
 		}
@@ -192,13 +195,14 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 		if err == nil {
 			return messages, checkpoint, nil
 		}
+		log.Printf("proton fetch: listUnreadInbox attempt failed; attempt=%d/%d version=%q error=%v", attempt+1, maxAttempts, c.currentVersion(), err)
 		lastErr = err
 		if !c.rotateVersionOnOutOfDate(err) {
 			break
 		}
 	}
 
-	return nil, "", lastErr
+	return nil, "", fmt.Errorf("fetch unread inbox failed after %d attempt(s): %w", maxAttempts, lastErr)
 }
 
 func readTokenFileModTime() time.Time {
@@ -225,6 +229,7 @@ func (c *APIClient) reloadClientOnTokenFileChange() {
 	// This prevents a malformed/partial write from dropping a currently healthy
 	// in-memory client and causing avoidable auth failures mid-run.
 	if _, _, _, err := readTokenFile(); err != nil {
+		log.Printf("proton auth: token file changed but reload skipped because token fields are invalid: %v", err)
 		return
 	}
 

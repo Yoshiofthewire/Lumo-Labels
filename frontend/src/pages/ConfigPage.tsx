@@ -456,7 +456,13 @@ export function ConfigPage() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown error";
       setProtonAuthTone("error");
-      setProtonAuthStatus(`Failed to upload or convert Proton auth file: ${msg}`);
+      if (msg === "Failed to fetch") {
+        setProtonAuthStatus(
+          "Failed to upload or convert Proton auth file: network/API connection dropped before a response. Check API availability and app logs, then retry."
+        );
+      } else {
+        setProtonAuthStatus(`Failed to upload or convert Proton auth file: ${msg}`);
+      }
     } finally {
       setProtonAuthBusy(false);
     }
