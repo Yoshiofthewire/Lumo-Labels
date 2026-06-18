@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ import (
 	"llama-lab/backend/internal/logging"
 	"llama-lab/backend/internal/state"
 
+	protonapi "github.com/ProtonMail/go-proton-api"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -355,6 +357,15 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
+
+		validatedUID, validatedAccess, validatedRefresh, validateErr := validateAndRotateProtonAuth(r.Context(), uid, refresh, cookies)
+		if validateErr != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "uploaded Proton session is not refreshable; please export a fresh mail auth file and try again"})
+			return
+		}
+		uid = validatedUID
+		access = validatedAccess
+		refresh = validatedRefresh
 
 		if err := os.MkdirAll(filepath.Dir(s.protonAuthPath), 0o755); err != nil {
 			http.Error(w, "failed to create proton auth directory", http.StatusInternalServerError)
@@ -1026,6 +1037,69 @@ type refreshCookiePayload struct {
 	ClientID     string `json:"ClientID"`
 	RefreshToken string `json:"RefreshToken"`
 	UID          string `json:"UID"`
+}
+
+func validateAndRotateProtonAuth(ctx context.Context, uid, refresh string, cookies []protonCookie) (string, string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	jar, err := protonCookieJar(cookies)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	manager := protonapi.New(
+		protonapi.WithAppVersion("web-mail@6.10.0.0"),
+		protonapi.WithCookieJar(jar),
+	)
+
+	_, auth, err := manager.NewClientWithRefresh(ctx, strings.TrimSpace(uid), strings.TrimSpace(refresh))
+	if err != nil {
+		return "", "", "", err
+	}
+	if strings.TrimSpace(auth.UID) == "" || strings.TrimSpace(auth.AccessToken) == "" || strings.TrimSpace(auth.RefreshToken) == "" {
+		return "", "", "", errors.New("proton refresh validation returned incomplete auth")
+	}
+
+	return strings.TrimSpace(auth.UID), strings.TrimSpace(auth.AccessToken), strings.TrimSpace(auth.RefreshToken), nil
+}
+
+func protonCookieJar(cookies []protonCookie) (http.CookieJar, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	byHost := map[string][]*http.Cookie{}
+	for _, c := range cookies {
+		name := strings.TrimSpace(c.Name)
+		value := strings.TrimSpace(c.Value)
+		domain := strings.TrimSpace(c.Domain)
+		if name == "" || value == "" || domain == "" {
+			continue
+		}
+		host := strings.TrimPrefix(domain, ".")
+		if host == "" {
+			continue
+		}
+		byHost[host] = append(byHost[host], &http.Cookie{
+			Name:   name,
+			Value:  value,
+			Domain: domain,
+			Path:   "/",
+		})
+	}
+
+	if len(byHost) == 0 {
+		return nil, errors.New("storageState auth file did not include usable proton.me cookies")
+	}
+
+	for host, hostCookies := range byHost {
+		u := &url.URL{Scheme: "https", Host: host, Path: "/"}
+		jar.SetCookies(u, hostCookies)
+	}
+
+	return jar, nil
 }
 
 func extractProtonTokensFromStorageState(payload []byte) (string, string, string, string, []protonCookie, error) {
