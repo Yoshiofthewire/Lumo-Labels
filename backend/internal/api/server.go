@@ -361,13 +361,20 @@ func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		validatedUID, validatedAccess, validatedRefresh, validateErr := validateAndRotateProtonAuth(r.Context(), uid, refresh, cookies)
+		validatedUID, validatedAccess, validatedRefresh, refreshPayloadComplete, missingRefreshFields, validateErr := validateAndRotateProtonAuth(r.Context(), uid, access, refresh, cookies)
 		if validateErr != nil {
 			if s.logger != nil {
 				s.logger.Error("proton auth upload validation failed", "filename", header.Filename, "client_id", clientID, "cookie_count", strconv.Itoa(len(cookies)), "uid_present", strconv.FormatBool(strings.TrimSpace(uid) != ""), "error", validateErr.Error())
 			}
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "uploaded Proton session is not refreshable; please export a fresh mail auth file and try again"})
 			return
+		}
+		if !refreshPayloadComplete && s.logger != nil {
+			missing := strings.Join(missingRefreshFields, ",")
+			if missing == "" {
+				missing = "unknown"
+			}
+			s.logger.Info("proton auth upload validation succeeded with partial refresh payload", "filename", header.Filename, "client_id", clientID, "cookie_count", strconv.Itoa(len(cookies)), "missing_auth_fields", missing)
 		}
 		uid = validatedUID
 		access = validatedAccess
@@ -1059,13 +1066,13 @@ type refreshCookiePayload struct {
 	UID          string `json:"UID"`
 }
 
-func validateAndRotateProtonAuth(ctx context.Context, uid, refresh string, cookies []protonCookie) (string, string, string, error) {
+func validateAndRotateProtonAuth(ctx context.Context, uid, access, refresh string, cookies []protonCookie) (string, string, string, bool, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	jar, err := protonCookieJar(cookies)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", false, nil, err
 	}
 
 	manager := protonapi.New(
@@ -1075,13 +1082,41 @@ func validateAndRotateProtonAuth(ctx context.Context, uid, refresh string, cooki
 
 	_, auth, err := manager.NewClientWithRefresh(ctx, strings.TrimSpace(uid), strings.TrimSpace(refresh))
 	if err != nil {
-		return "", "", "", err
-	}
-	if strings.TrimSpace(auth.UID) == "" || strings.TrimSpace(auth.AccessToken) == "" || strings.TrimSpace(auth.RefreshToken) == "" {
-		return "", "", "", errors.New("proton refresh validation returned incomplete auth")
+		return "", "", "", false, nil, err
 	}
 
-	return strings.TrimSpace(auth.UID), strings.TrimSpace(auth.AccessToken), strings.TrimSpace(auth.RefreshToken), nil
+	resolvedUID := firstNonEmpty(strings.TrimSpace(auth.UID), strings.TrimSpace(uid))
+	resolvedAccess := firstNonEmpty(strings.TrimSpace(auth.AccessToken), strings.TrimSpace(access))
+	resolvedRefresh := firstNonEmpty(strings.TrimSpace(auth.RefreshToken), strings.TrimSpace(refresh))
+	missingFields := missingAuthFields(auth)
+	payloadComplete := len(missingFields) == 0
+
+	if resolvedUID == "" || resolvedAccess == "" || resolvedRefresh == "" {
+		return "", "", "", false, missingFields, errors.New("proton refresh validation returned unusable auth data")
+	}
+
+	return resolvedUID, resolvedAccess, resolvedRefresh, payloadComplete, missingFields, nil
+}
+
+func missingAuthFields(auth protonapi.Auth) []string {
+	missing := make([]string, 0, 3)
+	if strings.TrimSpace(auth.UID) == "" {
+		missing = append(missing, "uid")
+	}
+	if strings.TrimSpace(auth.AccessToken) == "" {
+		missing = append(missing, "accessToken")
+	}
+	if strings.TrimSpace(auth.RefreshToken) == "" {
+		missing = append(missing, "refreshToken")
+	}
+	return missing
+}
+
+func firstNonEmpty(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return strings.TrimSpace(primary)
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func protonCookieJar(cookies []protonCookie) (http.CookieJar, error) {
