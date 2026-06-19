@@ -83,6 +83,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/logs/list", s.withAuth(s.handleLogsList))
 	mux.HandleFunc("/api/llama/auth", s.withAuth(s.handleLlamaAuth))
 	mux.HandleFunc("/api/proton/auth", s.withAuth(s.handleProtonAuth))
+	mux.HandleFunc("/api/debug/proton-token-state", s.withAuth(s.handleProtonTokenState))
 	mux.HandleFunc("/api/proton/private-key", s.withAuth(s.handleProtonPrivateKey))
 	mux.HandleFunc("/api/llama/test", s.withAuth(s.handleLlamaTest))
 	mux.HandleFunc("/api/tuning", s.withAuth(s.handleTuning))
@@ -114,6 +115,135 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"serverTimeUtc":       time.Now().UTC().Format(time.RFC3339),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type protonTokenFileDebug struct {
+	Path                string   `json:"path"`
+	Exists              bool     `json:"exists"`
+	Readable            bool     `json:"readable"`
+	Parseable           bool     `json:"parseable"`
+	Size                int64    `json:"size"`
+	ModifiedAt          string   `json:"modifiedAt,omitempty"`
+	UpdatedAt           string   `json:"updatedAt,omitempty"`
+	ClientID            string   `json:"clientId,omitempty"`
+	UIDPresent          bool     `json:"uidPresent"`
+	AccessTokenPresent  bool     `json:"accessTokenPresent"`
+	RefreshTokenPresent bool     `json:"refreshTokenPresent"`
+	TokenReady          bool     `json:"tokenReady"`
+	CookieCount         int      `json:"cookieCount"`
+	CookieNames         []string `json:"cookieNames,omitempty"`
+	Error               string   `json:"error,omitempty"`
+}
+
+func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	mainState := readProtonTokenFileDebug(s.protonAuthPath)
+	snapshotState := readProtonTokenFileDebug(s.protonAuthPath + ".last-good")
+
+	recommendedSource := "none"
+	if mainState.TokenReady {
+		recommendedSource = "main"
+	} else if snapshotState.TokenReady {
+		recommendedSource = "snapshot"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recommendedSource": recommendedSource,
+		"main":              mainState,
+		"snapshot":          snapshotState,
+	})
+}
+
+func readProtonTokenFileDebug(filePath string) protonTokenFileDebug {
+	st := protonTokenFileDebug{Path: filePath}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return st
+		}
+		st.Error = "stat failed"
+		return st
+	}
+
+	st.Exists = true
+	st.Size = info.Size()
+	st.ModifiedAt = info.ModTime().UTC().Format(time.RFC3339)
+
+	b, err := os.ReadFile(filePath)
+	if err != nil {
+		st.Error = "read failed"
+		return st
+	}
+	st.Readable = true
+
+	parsed := map[string]any{}
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		st.Error = "parse failed"
+		return st
+	}
+	st.Parseable = true
+
+	uid := mapString(parsed, "uid")
+	access := mapString(parsed, "accessToken")
+	refresh := mapString(parsed, "refreshToken")
+	st.UIDPresent = strings.TrimSpace(uid) != ""
+	st.AccessTokenPresent = strings.TrimSpace(access) != ""
+	st.RefreshTokenPresent = strings.TrimSpace(refresh) != ""
+	st.TokenReady = st.UIDPresent && st.AccessTokenPresent && st.RefreshTokenPresent
+	st.UpdatedAt = mapString(parsed, "updatedAt")
+	st.ClientID = mapString(parsed, "clientID")
+	st.CookieCount, st.CookieNames = extractCookieMeta(parsed)
+
+	return st
+}
+
+func mapString(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func extractCookieMeta(parsed map[string]any) (int, []string) {
+	raw, ok := parsed["cookies"]
+	if !ok {
+		return 0, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return 0, nil
+	}
+	seen := map[string]bool{}
+	names := make([]string, 0, len(list))
+	count := 0
+	for _, item := range list {
+		cookieMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		count++
+		name := strings.TrimSpace(mapString(cookieMap, "name"))
+		if name == "" {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return count, names
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {

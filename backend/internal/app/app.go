@@ -61,6 +61,8 @@ func Run(args []string) error {
 		return fmt.Errorf("create logger: %w", err)
 	}
 	defer logger.Close()
+	cleanupStaleProtonAuthTempFiles(logger)
+	logProtonAuthStartupState(logger)
 
 	store, err := state.New(paths.StateDir)
 	if err != nil {
@@ -139,6 +141,77 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func protonAuthFilePath() string {
+	if path := strings.TrimSpace(os.Getenv("PROTON_AUTH_FILE")); path != "" {
+		return path
+	}
+	return "/llama_lab/config/proton-auth.json"
+}
+
+func cleanupStaleProtonAuthTempFiles(logger *logging.Logger) {
+	authPath := protonAuthFilePath()
+	pattern := authPath + ".tmp.*"
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		logger.Error("failed to list proton auth temp files", "pattern", pattern, "error", err.Error())
+		return
+	}
+	if len(files) == 0 {
+		return
+	}
+
+	cutoff := time.Now().Add(-5 * time.Minute)
+	removed := 0
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(path); err == nil {
+			removed++
+		}
+	}
+	if removed > 0 {
+		logger.Info("removed stale proton auth temp files", "count", strconv.Itoa(removed))
+	}
+}
+
+func logProtonAuthStartupState(logger *logging.Logger) {
+	authPath := protonAuthFilePath()
+	snapshotPath := authPath + ".last-good"
+	mainExists, mainSize, mainMTime := fileStatSummary(authPath)
+	snapshotExists, snapshotSize, snapshotMTime := fileStatSummary(snapshotPath)
+
+	source := "none"
+	if mainExists {
+		source = "main"
+	} else if snapshotExists {
+		source = "snapshot"
+	}
+
+	logger.Info(
+		"proton auth startup state",
+		"source_candidate", source,
+		"main_exists", strconv.FormatBool(mainExists),
+		"main_size", strconv.FormatInt(mainSize, 10),
+		"main_mtime", mainMTime,
+		"snapshot_exists", strconv.FormatBool(snapshotExists),
+		"snapshot_size", strconv.FormatInt(snapshotSize, 10),
+		"snapshot_mtime", snapshotMTime,
+	)
+}
+
+func fileStatSummary(path string) (bool, int64, string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, 0, ""
+	}
+	return true, info.Size(), info.ModTime().UTC().Format(time.RFC3339)
 }
 
 func monitorHealth(logger *logging.Logger, healthSvc *health.Service) {

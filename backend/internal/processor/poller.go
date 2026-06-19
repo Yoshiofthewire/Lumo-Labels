@@ -110,6 +110,11 @@ func (p *Poller) tick() {
 			p.health.SetStatus(health.Status{Healthy: true, FailureReason: []string{"Proton Mail Auth Unhealthy"}})
 			return
 		}
+		if isProtonAuthRecoverableError(err) {
+			p.log.Info("proton auth refresh retrying", "checkpoint", checkpoint, "hint", protonAuthTroubleshootingHint(err))
+			p.health.SetStatus(health.Status{Healthy: true, FailureReason: []string{"Proton Mail Auth Refresh Retrying"}})
+			return
+		}
 		p.health.MarkUnhealthy("proton unreachable")
 		return
 	}
@@ -180,13 +185,36 @@ func isProtonAuthUnhealthyError(err error) bool {
 	if strings.Contains(msg, "de-auth") && strings.Contains(msg, "400") {
 		return true
 	}
+	if strings.Contains(msg, "re-authentication required") {
+		return true
+	}
+	if strings.Contains(msg, "missing proton token credentials") {
+		return true
+	}
+	if strings.Contains(msg, "failed to parse proton auth file") {
+		return true
+	}
+	if strings.Contains(msg, "failed to read proton auth file") {
+		return true
+	}
+	return false
+}
+
+func isProtonAuthRecoverableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	if strings.Contains(msg, "422") {
 		return true
 	}
 	if strings.Contains(msg, "out of date") || strings.Contains(msg, "refresh the page") {
 		return true
 	}
-	if strings.Contains(msg, "re-authentication required") {
+	if strings.Contains(msg, "invalid input") {
+		return true
+	}
+	if strings.Contains(msg, "de-auth") && strings.Contains(msg, "422") {
 		return true
 	}
 	return false

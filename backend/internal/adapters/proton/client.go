@@ -38,7 +38,7 @@ type Client interface {
 // proactiveRefreshInterval is the minimum time between proactive token
 // refreshes. Proton refresh tokens are single-use; calling the endpoint too
 // frequently burns through the rotation chain and causes 400 errors.
-const proactiveRefreshInterval = 1 * time.Hour
+const proactiveRefreshInterval = 45 * time.Minute
 
 type APIClient struct {
 	mu             sync.Mutex
@@ -162,9 +162,9 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 			// Note: browser-extracted tokens legitimately return 422 from the refresh
 			// endpoint (different ClientID), so we never treat refresh errors as fatal.
 			c.mu.Lock()
-			uid, acc, ref, tokenErr := readTokenFile()
+			uid, acc, ref, source, tokenErr := readTokenFileWithSource()
 			if tokenErr == nil {
-				log.Printf("proton auth: rebuilt client from token file after refresh failure; uid_present=%t access_present=%t refresh_present=%t", strings.TrimSpace(uid) != "", strings.TrimSpace(acc) != "", strings.TrimSpace(ref) != "")
+				log.Printf("proton auth: rebuilt client from token file after refresh failure; source=%s uid_present=%t access_present=%t refresh_present=%t", source, strings.TrimSpace(uid) != "", strings.TrimSpace(acc) != "", strings.TrimSpace(ref) != "")
 				pc := c.mgr.NewClient(uid, acc, ref)
 				pc.AddAuthHandler(func(a protonapi.Auth) {
 					_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
@@ -715,10 +715,15 @@ func readTokenFileFromPath(path string) (string, string, string, error) {
 }
 
 func readTokenFile() (string, string, string, error) {
+	uid, acc, ref, _, err := readTokenFileWithSource()
+	return uid, acc, ref, err
+}
+
+func readTokenFileWithSource() (string, string, string, string, error) {
 	path := tokenFilePath()
 	uid, acc, ref, err := readTokenFileFromPath(path)
 	if err == nil {
-		return uid, acc, ref, nil
+		return uid, acc, ref, "main", nil
 	}
 
 	// Fallback to last-known-good snapshot when the live auth file is temporarily
@@ -726,10 +731,10 @@ func readTokenFile() (string, string, string, error) {
 	snapshotPath := tokenSnapshotFilePath(path)
 	suid, sacc, sref, snapshotErr := readTokenFileFromPath(snapshotPath)
 	if snapshotErr == nil {
-		return suid, sacc, sref, nil
+		return suid, sacc, sref, "snapshot", nil
 	}
 
-	return "", "", "", err
+	return "", "", "", "", err
 }
 
 func writeTokenFile(uid, acc, ref string) error {
