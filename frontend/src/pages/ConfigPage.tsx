@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { getJSON, postFormData, postJSON, putJSON } from "../api/client";
+import { deleteJSON, getJSON, postFormData, postJSON, putJSON } from "../api/client";
 
 type AppConfig = {
   timezone: string;
@@ -36,6 +36,31 @@ type ProtonAuthStatus = {
   parseOk: boolean;
 };
 
+type ProtonLoginStatus = {
+  configured: boolean;
+  path: string;
+  keyPath?: string;
+  username?: string;
+  hasTotpSecret?: boolean;
+  updatedAt?: string;
+  encryptedAtRest?: boolean;
+};
+
+type ProtonLoginSaveResponse = {
+  ok: boolean;
+  configured: boolean;
+  path: string;
+  keyPath?: string;
+  encryptedAtRest?: boolean;
+};
+
+type ProtonLoginValidateResponse = {
+  ok: boolean;
+  requiresTOTP?: boolean;
+  stage?: string;
+  error?: string;
+};
+
 type ProtonAuthUploadResponse = {
   ok: boolean;
   path: string;
@@ -48,20 +73,24 @@ type ProtonAuthUploadResponse = {
 type ProtonPrivateKeyStatus = {
   keyExists: boolean;
   keyPath: string;
+  keyEncryptionKeyPath?: string;
   keySize: number;
   keyModifiedAt?: string;
   passwordExists: boolean;
   passwordPath: string;
   passwordModifiedAt?: string;
+  encryptedAtRest?: boolean;
   decryptReady: boolean;
 };
 
 type ProtonPrivateKeyUploadResponse = {
   ok: boolean;
   keyPath: string;
+  keyEncryptionKeyPath?: string;
   passwordPath: string;
   filename?: string;
   passwordUpdated: boolean;
+  encryptedAtRest?: boolean;
   decryptReady: boolean;
 };
 
@@ -265,6 +294,14 @@ export function ConfigPage() {
   const [protonAuthStatus, setProtonAuthStatus] = useState("");
   const [protonAuthTone, setProtonAuthTone] = useState<LlamaAuthNoticeTone>("idle");
   const [protonAuthBusy, setProtonAuthBusy] = useState(false);
+  const [protonLogin, setProtonLogin] = useState<ProtonLoginStatus | null>(null);
+  const [protonLoginUsername, setProtonLoginUsername] = useState("");
+  const [protonLoginPassword, setProtonLoginPassword] = useState("");
+  const [protonLoginTotpSecret, setProtonLoginTotpSecret] = useState("");
+  const [protonLoginStatus, setProtonLoginStatus] = useState("");
+  const [protonLoginTone, setProtonLoginTone] = useState<LlamaAuthNoticeTone>("idle");
+  const [protonLoginBusy, setProtonLoginBusy] = useState(false);
+  const [protonLoginValidateBusy, setProtonLoginValidateBusy] = useState(false);
   const [protonPrivateKey, setProtonPrivateKey] = useState<ProtonPrivateKeyStatus | null>(null);
   const [protonPrivateKeyFile, setProtonPrivateKeyFile] = useState<File | null>(null);
   const [protonPrivateKeyPassword, setProtonPrivateKeyPassword] = useState("");
@@ -306,6 +343,19 @@ export function ConfigPage() {
     }
   }
 
+  async function loadProtonLoginStatus() {
+    try {
+      const status = await getJSON<ProtonLoginStatus>("/api/proton/login");
+      setProtonLogin(status);
+      if (status.username) {
+        setProtonLoginUsername(status.username);
+      }
+    } catch {
+      setProtonLoginTone("error");
+      setProtonLoginStatus("Failed to load Proton login credential status.");
+    }
+  }
+
   async function loadProtonPrivateKeyStatus() {
     try {
       const status = await getJSON<ProtonPrivateKeyStatus>("/api/proton/private-key");
@@ -328,9 +378,10 @@ export function ConfigPage() {
       getJSON<LabelsResponse>("/api/labels"),
 	      getJSON<TuningResponse>("/api/tuning"),
 	      getJSON<ProtonAuthStatus>("/api/proton/auth"),
+	      getJSON<ProtonLoginStatus>("/api/proton/login"),
 	      getJSON<ProtonPrivateKeyStatus>("/api/proton/private-key")
     ])
-        .then(([data, labelsData, tuningData, protonAuthData, protonPrivateKeyData]) => {
+        .then(([data, labelsData, tuningData, protonAuthData, protonLoginData, protonPrivateKeyData]) => {
         setCfg(data);
         const all = Array.from(new Set([...(labelsData.proton ?? []), ...(labelsData.configured ?? [])])).filter(Boolean);
         setAllLabels(all);
@@ -338,6 +389,10 @@ export function ConfigPage() {
         setTuningText(content);
         hydrateFromTuning(content, all);
         setProtonAuth(protonAuthData);
+        setProtonLogin(protonLoginData);
+        if (protonLoginData.username) {
+          setProtonLoginUsername(protonLoginData.username);
+        }
         setProtonPrivateKey(protonPrivateKeyData);
       })
       .catch(() => setStatus("Failed to load config. Please login first."));
@@ -468,6 +523,81 @@ export function ConfigPage() {
     }
   }
 
+  async function saveProtonLoginCredentials() {
+    if (protonLoginUsername.trim() === "" || protonLoginPassword.trim() === "") {
+      setProtonLoginTone("warning");
+      setProtonLoginStatus("Username and password are required.");
+      return;
+    }
+
+    setProtonLoginBusy(true);
+    setProtonLoginTone("idle");
+    setProtonLoginStatus("");
+    try {
+      await postJSON<ProtonLoginSaveResponse>("/api/proton/login", {
+        username: protonLoginUsername.trim(),
+        password: protonLoginPassword,
+        totpSecret: protonLoginTotpSecret.trim()
+      });
+      setProtonLoginPassword("");
+      setProtonLoginTone("success");
+      setProtonLoginStatus("Proton login credentials saved (encrypted at rest).");
+      await loadProtonLoginStatus();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown error";
+      setProtonLoginTone("error");
+      setProtonLoginStatus(`Failed to save Proton login credentials: ${msg}`);
+    } finally {
+      setProtonLoginBusy(false);
+    }
+  }
+
+  async function validateProtonLoginCredentials() {
+    setProtonLoginValidateBusy(true);
+    setProtonLoginTone("idle");
+    setProtonLoginStatus("");
+    try {
+      const result = await postJSON<ProtonLoginValidateResponse>("/api/proton/login/validate", {
+        username: protonLoginUsername.trim(),
+        password: protonLoginPassword,
+        totpSecret: protonLoginTotpSecret.trim()
+      });
+      if (result.ok) {
+        setProtonLoginTone("success");
+        setProtonLoginStatus(result.requiresTOTP ? "Login validated successfully (TOTP challenge passed)." : "Login validated successfully.");
+      } else {
+        setProtonLoginTone("error");
+        setProtonLoginStatus(result.error ?? "Validation failed.");
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown error";
+      setProtonLoginTone("error");
+      setProtonLoginStatus(`Failed to validate Proton login credentials: ${msg}`);
+    } finally {
+      setProtonLoginValidateBusy(false);
+    }
+  }
+
+  async function deleteProtonLoginCredentials() {
+    setProtonLoginBusy(true);
+    setProtonLoginTone("idle");
+    setProtonLoginStatus("");
+    try {
+      await deleteJSON<{ ok: boolean; configured: boolean }>("/api/proton/login");
+      setProtonLoginPassword("");
+      setProtonLoginTotpSecret("");
+      setProtonLoginTone("success");
+      setProtonLoginStatus("Stored Proton login credentials were removed.");
+      await loadProtonLoginStatus();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown error";
+      setProtonLoginTone("error");
+      setProtonLoginStatus(`Failed to remove Proton login credentials: ${msg}`);
+    } finally {
+      setProtonLoginBusy(false);
+    }
+  }
+
   async function uploadProtonPrivateKey() {
     if (!protonPrivateKeyFile && protonPrivateKeyPassword.trim() === "") {
       setProtonPrivateKeyTone("warning");
@@ -531,6 +661,62 @@ export function ConfigPage() {
       ) : null}
       {protonAuthStatus ? <p className={`notice notice-${protonAuthTone}`}>{protonAuthStatus}</p> : null}
 
+      <h4>Credential Login Recovery</h4>
+      <p>
+        Optional: store Proton username/password and TOTP secret so the daemon can recover automatically when a refresh token chain expires.
+        Credentials are encrypted at rest using a local master key file.
+      </p>
+      <label>
+        <div>Username</div>
+        <input
+          type="text"
+          value={protonLoginUsername}
+          onChange={(event) => setProtonLoginUsername(event.target.value)}
+          placeholder="your Proton username"
+        />
+      </label>
+      <label>
+        <div>Password</div>
+        <input
+          type="password"
+          value={protonLoginPassword}
+          onChange={(event) => setProtonLoginPassword(event.target.value)}
+          placeholder="Proton account password"
+        />
+      </label>
+      <label>
+        <div>TOTP Secret (optional if account has no TOTP)</div>
+        <input
+          type="password"
+          value={protonLoginTotpSecret}
+          onChange={(event) => setProtonLoginTotpSecret(event.target.value)}
+          placeholder="Base32 TOTP secret"
+        />
+      </label>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+        <button type="button" onClick={saveProtonLoginCredentials} disabled={protonLoginBusy}>
+          {protonLoginBusy ? "Saving..." : "Save Proton Login"}
+        </button>
+        <button type="button" onClick={validateProtonLoginCredentials} disabled={protonLoginValidateBusy}>
+          {protonLoginValidateBusy ? "Validating..." : "Validate Login"}
+        </button>
+        <button type="button" onClick={deleteProtonLoginCredentials} disabled={protonLoginBusy}>
+          Remove Stored Login
+        </button>
+      </div>
+      {protonLogin ? (
+        <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, marginTop: 10, marginBottom: 10 }}>
+          <p>Stored Login Configured: {protonLogin.configured ? "Yes" : "No"}</p>
+          <p>Credential File Path: {protonLogin.path}</p>
+          {protonLogin.keyPath ? <p>Master Key Path: {protonLogin.keyPath}</p> : null}
+          <p>Encrypted At Rest: {protonLogin.encryptedAtRest ? "Yes" : "Unknown"}</p>
+          {protonLogin.username ? <p>Stored Username: {protonLogin.username}</p> : null}
+          <p>TOTP Secret Present: {protonLogin.hasTotpSecret ? "Yes" : "No"}</p>
+          {protonLogin.updatedAt ? <p>Updated: {protonLogin.updatedAt}</p> : null}
+        </div>
+      ) : null}
+      {protonLoginStatus ? <p className={`notice notice-${protonLoginTone}`}>{protonLoginStatus}</p> : null}
+
       <hr />
       <h3>Proton Private Key</h3>
       <p>Upload the exported Proton private key and the password used to unlock it. These secrets are stored in the container-only private directory, not in the general config API.</p>
@@ -556,9 +742,11 @@ export function ConfigPage() {
           <p>Private Key Path: {protonPrivateKey.keyPath}</p>
           {protonPrivateKey.keyExists ? <p>Private Key Size: {protonPrivateKey.keySize} bytes</p> : null}
           {protonPrivateKey.keyModifiedAt ? <p>Private Key Updated: {protonPrivateKey.keyModifiedAt}</p> : null}
+          {protonPrivateKey.keyEncryptionKeyPath ? <p>Encryption Key Path: {protonPrivateKey.keyEncryptionKeyPath}</p> : null}
           <p>Password Present: {protonPrivateKey.passwordExists ? "Yes" : "No"}</p>
           <p>Password Path: {protonPrivateKey.passwordPath}</p>
           {protonPrivateKey.passwordModifiedAt ? <p>Password Updated: {protonPrivateKey.passwordModifiedAt}</p> : null}
+          <p>Encrypted At Rest: {protonPrivateKey.encryptedAtRest ? "Yes" : "No"}</p>
           <p>Decryption Ready: {protonPrivateKey.decryptReady ? "Yes" : "No"}</p>
         </div>
       ) : null}

@@ -2,6 +2,9 @@ package proton
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +22,7 @@ import (
 
 	protonapi "github.com/ProtonMail/go-proton-api"
 	pgpcrypto "github.com/ProtonMail/gopenpgp/v2/crypto"
+	"github.com/pquerna/otp/totp"
 )
 
 type Message struct {
@@ -58,6 +62,8 @@ type APIClient struct {
 	refreshReason   string
 	lastPersistAt   time.Time
 	lastPersistErr  string
+	lastReloginAt   time.Time
+	lastReloginErr  string
 }
 
 type AuthDebugInfo struct {
@@ -65,6 +71,8 @@ type AuthDebugInfo struct {
 	RefreshReason   string `json:"refreshReason,omitempty"`
 	LastPersistAt   string `json:"lastPersistAt,omitempty"`
 	LastPersistErr  string `json:"lastPersistError,omitempty"`
+	LastReloginAt   string `json:"lastReloginAt,omitempty"`
+	LastReloginErr  string `json:"lastReloginError,omitempty"`
 }
 
 type tokenFile struct {
@@ -82,6 +90,19 @@ type protonCookie struct {
 	Value  string `json:"value"`
 	Domain string `json:"domain"`
 	Path   string `json:"path"`
+}
+
+type protonLoginCredentials struct {
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	TOTPSecret string `json:"totpSecret,omitempty"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+}
+
+type encryptedProtonLoginPayload struct {
+	Version    int    `json:"version"`
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
 }
 
 func NewAPIClientFromEnv() *APIClient {
@@ -121,6 +142,15 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	refreshStartedAt := time.Now()
 	pc, auth, err := c.mgr.NewClientWithRefresh(ctx, uid, ref)
 	if err != nil {
+		if isInvalidRefreshTokenError(err) {
+			log.Printf("proton auth: refresh token invalid; attempting credential re-login recovery")
+			if reloginErr := c.tryCredentialReloginLocked(ctx); reloginErr == nil {
+				log.Printf("proton auth: credential re-login recovery succeeded")
+				return nil
+			} else {
+				log.Printf("proton auth: credential re-login recovery failed: %v", reloginErr)
+			}
+		}
 		log.Printf("proton auth: refresh call failed; duration_ms=%d error=%v", time.Since(refreshStartedAt).Milliseconds(), err)
 		return err
 	}
@@ -171,6 +201,70 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	c.client = pc
 	c.mu.Unlock()
 
+	return nil
+}
+
+func (c *APIClient) tryCredentialReloginLocked(ctx context.Context) error {
+	var reloginErr error
+	defer func() {
+		c.recordReloginResult(reloginErr)
+	}()
+
+	creds, err := readProtonLoginCredentials()
+	if err != nil {
+		reloginErr = err
+		return reloginErr
+	}
+
+	pc, auth, err := c.mgr.NewClientWithLogin(ctx, creds.Username, []byte(creds.Password))
+	if err != nil {
+		reloginErr = fmt.Errorf("login with username/password failed: %w", err)
+		return reloginErr
+	}
+
+	if auth.TwoFA.Enabled&protonapi.HasTOTP != 0 {
+		if strings.TrimSpace(creds.TOTPSecret) == "" {
+			reloginErr = errors.New("account requires TOTP but no TOTP secret is configured")
+			return reloginErr
+		}
+		code, err := totp.GenerateCode(strings.TrimSpace(creds.TOTPSecret), time.Now())
+		if err != nil {
+			reloginErr = fmt.Errorf("generate TOTP code: %w", err)
+			return reloginErr
+		}
+		if err := pc.Auth2FA(ctx, protonapi.Auth2FAReq{TwoFactorCode: code}); err != nil {
+			reloginErr = fmt.Errorf("submit TOTP challenge: %w", err)
+			return reloginErr
+		}
+	}
+
+	if err := c.persistRotatedAuthLocked(auth); err != nil {
+		reloginErr = fmt.Errorf("persist auth from credential re-login: %w", err)
+		return reloginErr
+	}
+
+	c.mu.Lock()
+	c.refreshDisabled = false
+	c.refreshReason = ""
+	c.lastRefreshAt = time.Now()
+	c.nextRefreshAt = time.Now().Add(proactiveRefreshInterval)
+	c.tokenFileMTime = readTokenFileModTime()
+	c.client = pc
+	c.mu.Unlock()
+
+	pc.AddAuthHandler(func(a protonapi.Auth) {
+		_ = c.persistRotatedAuth(a)
+		c.mu.Lock()
+		c.tokenFileMTime = readTokenFileModTime()
+		c.mu.Unlock()
+	})
+	pc.AddDeauthHandler(func() {
+		c.mu.Lock()
+		c.client = nil
+		c.mu.Unlock()
+	})
+
+	reloginErr = nil
 	return nil
 }
 
@@ -659,6 +753,17 @@ func (c *APIClient) recordPersistResult(err error) {
 	c.mu.Unlock()
 }
 
+func (c *APIClient) recordReloginResult(err error) {
+	c.mu.Lock()
+	c.lastReloginAt = time.Now()
+	if err != nil {
+		c.lastReloginErr = err.Error()
+	} else {
+		c.lastReloginErr = ""
+	}
+	c.mu.Unlock()
+}
+
 func isOutOfDateError(err error) bool {
 	if err == nil {
 		return false
@@ -717,9 +822,13 @@ func (c *APIClient) DebugAuthState() AuthDebugInfo {
 		RefreshDisabled: c.refreshDisabled,
 		RefreshReason:   c.refreshReason,
 		LastPersistErr:  c.lastPersistErr,
+		LastReloginErr:  c.lastReloginErr,
 	}
 	if !c.lastPersistAt.IsZero() {
 		info.LastPersistAt = c.lastPersistAt.UTC().Format(time.RFC3339)
+	}
+	if !c.lastReloginAt.IsZero() {
+		info.LastReloginAt = c.lastReloginAt.UTC().Format(time.RFC3339)
 	}
 	return info
 }
@@ -852,6 +961,88 @@ func tokenFilePath() string {
 
 func tokenSnapshotFilePath(path string) string {
 	return path + ".last-good"
+}
+
+func protonLoginFilePath() string {
+	if path := strings.TrimSpace(os.Getenv("PROTON_LOGIN_FILE")); path != "" {
+		return path
+	}
+	return "/llama_lab/private/proton-login.json"
+}
+
+func protonLoginKeyFilePath() string {
+	if path := strings.TrimSpace(os.Getenv("PROTON_LOGIN_KEY_FILE")); path != "" {
+		return path
+	}
+	return "/llama_lab/private/proton-login.key"
+}
+
+func readProtonLoginCredentials() (protonLoginCredentials, error) {
+	path := protonLoginFilePath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return protonLoginCredentials{}, fmt.Errorf("failed to read proton login credentials")
+	}
+
+	plain, err := decryptPayloadIfNeeded(b, protonLoginKeyFilePath())
+	if err != nil {
+		return protonLoginCredentials{}, fmt.Errorf("failed to decrypt proton login credentials")
+	}
+
+	var creds protonLoginCredentials
+	if err := json.Unmarshal(plain, &creds); err != nil {
+		return protonLoginCredentials{}, fmt.Errorf("failed to parse proton login credentials")
+	}
+
+	creds.Username = strings.TrimSpace(creds.Username)
+	creds.Password = strings.TrimSpace(creds.Password)
+	creds.TOTPSecret = strings.TrimSpace(creds.TOTPSecret)
+	if creds.Username == "" || creds.Password == "" {
+		return protonLoginCredentials{}, fmt.Errorf("proton login credentials missing username/password")
+	}
+
+	return creds, nil
+}
+
+func decryptPayloadIfNeeded(raw []byte, keyPath string) ([]byte, error) {
+	var env encryptedProtonLoginPayload
+	if err := json.Unmarshal(raw, &env); err != nil || env.Version != 1 || strings.TrimSpace(env.Nonce) == "" || strings.TrimSpace(env.Ciphertext) == "" {
+		return raw, nil
+	}
+
+	keyRaw, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(keyRaw)))
+	if err != nil {
+		return nil, err
+	}
+	if len(key) != 32 {
+		return nil, errors.New("invalid proton login key length")
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(env.Ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+	return plain, nil
 }
 
 func hasTokenFields(tf tokenFile) bool {
@@ -1109,20 +1300,30 @@ func (d *messageDecrypter) Decrypt(armored string) (string, error) {
 func loadMessageDecrypter() (*messageDecrypter, bool, error) {
 	keyPath := protonPrivateKeyPath()
 	passwordPath := protonPrivateKeyPasswordPath()
+	encryptionKeyPath := protonPrivateKeyEncryptionKeyPath()
 
-	keyPayload, err := os.ReadFile(keyPath)
+	keyRaw, err := os.ReadFile(keyPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("read proton private key: %w", err)
 	}
-	passwordPayload, err := os.ReadFile(passwordPath)
+	keyPayload, err := decryptPayloadIfNeeded(keyRaw, encryptionKeyPath)
+	if err != nil {
+		return nil, true, fmt.Errorf("decrypt proton private key payload: %w", err)
+	}
+
+	passwordRaw, err := os.ReadFile(passwordPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("read proton private key password: %w", err)
+	}
+	passwordPayload, err := decryptPayloadIfNeeded(passwordRaw, encryptionKeyPath)
+	if err != nil {
+		return nil, true, fmt.Errorf("decrypt proton private key password payload: %w", err)
 	}
 
 	key, err := pgpcrypto.NewKeyFromArmored(string(keyPayload))
@@ -1163,6 +1364,13 @@ func protonPrivateKeyPasswordPath() string {
 		return path
 	}
 	return filepath.Join(secretDirPath(), "proton-private-key-password")
+}
+
+func protonPrivateKeyEncryptionKeyPath() string {
+	if path := strings.TrimSpace(os.Getenv("PROTON_PRIVATE_KEY_ENC_KEY_FILE")); path != "" {
+		return path
+	}
+	return filepath.Join(secretDirPath(), "proton-private-key.key")
 }
 
 func secretDirPath() string {

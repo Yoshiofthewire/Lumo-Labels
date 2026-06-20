@@ -39,6 +39,10 @@ type ProtonTokenDebugResponse = {
   refresh?: {
     disabled: boolean;
     reason?: string;
+    lastPersistAt?: string;
+    lastPersistError?: string;
+    lastReloginAt?: string;
+    lastReloginError?: string;
   };
 };
 
@@ -175,6 +179,14 @@ function ProtonTokenDebugCard() {
           {data.refresh?.disabled && (
             <div style={{ marginBottom: "0.6rem", padding: "0.5rem 0.65rem", borderRadius: 6, border: "1px solid rgba(255,204,102,0.35)", background: "rgba(255,204,102,0.08)", fontSize: "0.78rem" }}>
               Proactive refresh is disabled{data.refresh.reason ? `: ${data.refresh.reason}` : ""}.
+            </div>
+          )}
+          {(data.refresh?.lastPersistAt || data.refresh?.lastPersistError || data.refresh?.lastReloginAt || data.refresh?.lastReloginError) && (
+            <div style={{ marginBottom: "0.6rem", padding: "0.55rem 0.65rem", borderRadius: 6, border: "1px solid var(--line)", background: "var(--bg)", fontSize: "0.75rem", fontFamily: "var(--mono)", display: "grid", gap: "0.2rem" }}>
+              <div>Last persist at: {formatIso(data.refresh?.lastPersistAt)}</div>
+              <div>Last persist error: {data.refresh?.lastPersistError || "-"}</div>
+              <div>Last relogin at: {formatIso(data.refresh?.lastReloginAt)}</div>
+              <div>Last relogin error: {data.refresh?.lastReloginError || "-"}</div>
             </div>
           )}
           <div style={{ display: "grid", gap: "0.6rem", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>

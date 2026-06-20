@@ -3,6 +3,8 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -33,25 +35,29 @@ import (
 	"llama-lab/backend/internal/state"
 
 	protonapi "github.com/ProtonMail/go-proton-api"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/scrypt"
 )
 
 type Server struct {
-	mu             sync.RWMutex
-	cfg            config.Config
-	logger         *logging.Logger
-	store          *state.Store
-	health         *health.Service
-	configPath     string
-	logPath        string
-	adminPath      string
-	tuningPath     string
-	llamaAuthPath  string
-	protonAuthPath string
-	protonKeyPath  string
-	protonPassPath string
-	proton         proton.Client
-	sessions       map[string]time.Time
+	mu                  sync.RWMutex
+	cfg                 config.Config
+	logger              *logging.Logger
+	store               *state.Store
+	health              *health.Service
+	configPath          string
+	logPath             string
+	adminPath           string
+	tuningPath          string
+	llamaAuthPath       string
+	protonAuthPath      string
+	protonLoginPath     string
+	protonLoginKeyPath  string
+	protonKeyPath       string
+	protonKeyEncKeyPath string
+	protonPassPath      string
+	proton              proton.Client
+	sessions            map[string]time.Time
 }
 
 func NewServer(cfg config.Config, logger *logging.Logger, store *state.Store, healthSvc *health.Service, protonClient proton.Client) *Server {
@@ -62,9 +68,12 @@ func NewServer(cfg config.Config, logger *logging.Logger, store *state.Store, he
 	tuningPath := resolveTuningPath()
 	llamaAuthPath := envOrDefault("LLAMA_AUTH_FILE", "/llama_lab/config/llama-auth.json")
 	protonAuthPath := envOrDefault("PROTON_AUTH_FILE", "/llama_lab/config/proton-auth.json")
+	protonLoginPath := envOrDefault("PROTON_LOGIN_FILE", "/llama_lab/private/proton-login.json")
+	protonLoginKeyPath := envOrDefault("PROTON_LOGIN_KEY_FILE", "/llama_lab/private/proton-login.key")
 	protonKeyPath := envOrDefault("PROTON_PRIVATE_KEY_FILE", filepath.Join(secretDir, "proton-private-key.asc"))
+	protonKeyEncKeyPath := envOrDefault("PROTON_PRIVATE_KEY_ENC_KEY_FILE", filepath.Join(secretDir, "proton-private-key.key"))
 	protonPassPath := envOrDefault("PROTON_PRIVATE_KEY_PASSWORD_FILE", filepath.Join(secretDir, "proton-private-key-password"))
-	return &Server{cfg: cfg, logger: logger, store: store, health: healthSvc, configPath: configPath, logPath: logPath, adminPath: adminPath, tuningPath: tuningPath, llamaAuthPath: llamaAuthPath, protonAuthPath: protonAuthPath, protonKeyPath: protonKeyPath, protonPassPath: protonPassPath, proton: protonClient, sessions: map[string]time.Time{}}
+	return &Server{cfg: cfg, logger: logger, store: store, health: healthSvc, configPath: configPath, logPath: logPath, adminPath: adminPath, tuningPath: tuningPath, llamaAuthPath: llamaAuthPath, protonAuthPath: protonAuthPath, protonLoginPath: protonLoginPath, protonLoginKeyPath: protonLoginKeyPath, protonKeyPath: protonKeyPath, protonKeyEncKeyPath: protonKeyEncKeyPath, protonPassPath: protonPassPath, proton: protonClient, sessions: map[string]time.Time{}}
 }
 
 func (s *Server) Run() error {
@@ -83,6 +92,8 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/logs/list", s.withAuth(s.handleLogsList))
 	mux.HandleFunc("/api/llama/auth", s.withAuth(s.handleLlamaAuth))
 	mux.HandleFunc("/api/proton/auth", s.withAuth(s.handleProtonAuth))
+	mux.HandleFunc("/api/proton/login", s.withAuth(s.handleProtonLogin))
+	mux.HandleFunc("/api/proton/login/validate", s.withAuth(s.handleProtonLoginValidate))
 	mux.HandleFunc("/api/debug/proton-token-state", s.withAuth(s.handleProtonTokenState))
 	mux.HandleFunc("/api/proton/private-key", s.withAuth(s.handleProtonPrivateKey))
 	mux.HandleFunc("/api/llama/test", s.withAuth(s.handleLlamaTest))
@@ -117,6 +128,301 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+type protonLoginPayload struct {
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	TOTPSecret string `json:"totpSecret"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+}
+
+func (s *Server) handleProtonLogin(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		payload, exists, err := readProtonLoginPayload(s.protonLoginPath, s.protonLoginKeyPath)
+		if err != nil {
+			http.Error(w, "failed to read proton login credentials", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			writeJSON(w, http.StatusOK, map[string]any{"configured": false, "path": s.protonLoginPath})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"configured":      true,
+			"path":            s.protonLoginPath,
+			"keyPath":         s.protonLoginKeyPath,
+			"username":        payload.Username,
+			"hasTotpSecret":   strings.TrimSpace(payload.TOTPSecret) != "",
+			"updatedAt":       payload.UpdatedAt,
+			"encryptedAtRest": true,
+		})
+	case http.MethodPost:
+		var payload protonLoginPayload
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		payload.Username = strings.TrimSpace(payload.Username)
+		payload.Password = strings.TrimSpace(payload.Password)
+		payload.TOTPSecret = strings.TrimSpace(payload.TOTPSecret)
+		if payload.Username == "" || payload.Password == "" {
+			http.Error(w, "username and password are required", http.StatusBadRequest)
+			return
+		}
+		payload.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+		if err := os.MkdirAll(filepath.Dir(s.protonLoginPath), 0o700); err != nil {
+			http.Error(w, "failed to create login credential directory", http.StatusInternalServerError)
+			return
+		}
+		if err := writeProtonLoginPayload(s.protonLoginPath, s.protonLoginKeyPath, payload); err != nil {
+			http.Error(w, "failed to save proton login credentials", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "configured": true, "path": s.protonLoginPath, "keyPath": s.protonLoginKeyPath, "encryptedAtRest": true})
+	case http.MethodDelete:
+		if err := os.Remove(s.protonLoginPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "failed to remove proton login credentials", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "configured": false})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func readProtonLoginPayload(path, keyPath string) (protonLoginPayload, bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return protonLoginPayload{}, false, nil
+		}
+		return protonLoginPayload{}, false, err
+	}
+
+	plain, err := decryptProtonLoginPayload(b, keyPath)
+	if err != nil {
+		return protonLoginPayload{}, false, err
+	}
+
+	var payload protonLoginPayload
+	if err := json.Unmarshal(plain, &payload); err != nil {
+		return protonLoginPayload{}, false, err
+	}
+	payload.Username = strings.TrimSpace(payload.Username)
+	payload.TOTPSecret = strings.TrimSpace(payload.TOTPSecret)
+	return payload, true, nil
+}
+
+type protonLoginValidateRequest struct {
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	TOTPSecret string `json:"totpSecret"`
+}
+
+func (s *Server) handleProtonLoginValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req protonLoginValidateRequest
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req)
+
+	username := strings.TrimSpace(req.Username)
+	password := strings.TrimSpace(req.Password)
+	totpSecret := strings.TrimSpace(req.TOTPSecret)
+
+	if username == "" || password == "" {
+		stored, exists, err := readProtonLoginPayload(s.protonLoginPath, s.protonLoginKeyPath)
+		if err != nil {
+			http.Error(w, "failed to load stored proton credentials", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			http.Error(w, "username and password are required (or store credentials first)", http.StatusBadRequest)
+			return
+		}
+		if username == "" {
+			username = strings.TrimSpace(stored.Username)
+		}
+		if password == "" {
+			password = strings.TrimSpace(stored.Password)
+		}
+		if totpSecret == "" {
+			totpSecret = strings.TrimSpace(stored.TOTPSecret)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	mgr := protonapi.New(protonapi.WithAppVersion("web-mail@6.10.0.0"))
+	client, auth, err := mgr.NewClientWithLogin(ctx, username, []byte(password))
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error(), "stage": "login"})
+		return
+	}
+	defer client.Close()
+
+	needsTOTP := auth.TwoFA.Enabled&protonapi.HasTOTP != 0
+	if needsTOTP {
+		if strings.TrimSpace(totpSecret) == "" {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "TOTP required but totpSecret is missing", "stage": "2fa", "requiresTOTP": true})
+			return
+		}
+		code, err := totp.GenerateCode(strings.TrimSpace(totpSecret), time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "failed to generate TOTP code", "stage": "2fa", "requiresTOTP": true})
+			return
+		}
+		if err := client.Auth2FA(ctx, protonapi.Auth2FAReq{TwoFactorCode: code}); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error(), "stage": "2fa", "requiresTOTP": true})
+			return
+		}
+	}
+
+	if _, err := client.GetUser(ctx); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error(), "stage": "user"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requiresTOTP": needsTOTP})
+}
+
+type encryptedProtonLoginPayload struct {
+	Version    int    `json:"version"`
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
+}
+
+func writeProtonLoginPayload(path, keyPath string, payload protonLoginPayload) error {
+	plain, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeEncryptedPayload(path, keyPath, plain)
+}
+
+func writeEncryptedPrivateSecret(path, keyPath string, payload []byte) error {
+	return writeEncryptedPayload(path, keyPath, payload)
+}
+
+func writeEncryptedPayload(path, keyPath string, payload []byte) error {
+	key, err := loadOrCreateEncryptionKey(keyPath)
+	if err != nil {
+		return err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+
+	sealed := gcm.Seal(nil, nonce, payload, nil)
+	env := encryptedProtonLoginPayload{
+		Version:    1,
+		Nonce:      base64.StdEncoding.EncodeToString(nonce),
+		Ciphertext: base64.StdEncoding.EncodeToString(sealed),
+	}
+	b, err := json.MarshalIndent(env, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return atomicWritePrivateFile(path, b)
+}
+
+func decryptProtonLoginPayload(raw []byte, keyPath string) ([]byte, error) {
+	return decryptEncryptedPayload(raw, keyPath)
+}
+
+func decryptEncryptedPayload(raw []byte, keyPath string) ([]byte, error) {
+	var env encryptedProtonLoginPayload
+	if err := json.Unmarshal(raw, &env); err != nil || env.Version != 1 || strings.TrimSpace(env.Nonce) == "" || strings.TrimSpace(env.Ciphertext) == "" {
+		// Backward-compatibility with plaintext credentials.
+		return raw, nil
+	}
+
+	key, err := loadOrCreateEncryptionKey(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(env.Ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+	return plain, nil
+}
+
+func loadOrCreateEncryptionKey(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err == nil {
+		decoded, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+		if decErr != nil {
+			return nil, decErr
+		}
+		if len(decoded) != 32 {
+			return nil, errors.New("invalid proton login master key length")
+		}
+		return decoded, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	encoded := []byte(base64.StdEncoding.EncodeToString(key))
+	if err := atomicWritePrivateFile(path, encoded); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+func isEncryptedPayloadFile(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var env encryptedProtonLoginPayload
+	if err := json.Unmarshal(b, &env); err != nil {
+		return false
+	}
+	return env.Version == 1 && strings.TrimSpace(env.Nonce) != "" && strings.TrimSpace(env.Ciphertext) != ""
+}
+
 type protonTokenFileDebug struct {
 	Path                string   `json:"path"`
 	Exists              bool     `json:"exists"`
@@ -140,6 +446,8 @@ type protonRefreshDebug struct {
 	Reason         string `json:"reason,omitempty"`
 	LastPersistAt  string `json:"lastPersistAt,omitempty"`
 	LastPersistErr string `json:"lastPersistError,omitempty"`
+	LastReloginAt  string `json:"lastReloginAt,omitempty"`
+	LastReloginErr string `json:"lastReloginError,omitempty"`
 }
 
 func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +465,8 @@ func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) 
 		refreshState.Reason = info.RefreshReason
 		refreshState.LastPersistAt = info.LastPersistAt
 		refreshState.LastPersistErr = info.LastPersistErr
+		refreshState.LastReloginAt = info.LastReloginAt
+		refreshState.LastReloginErr = info.LastReloginErr
 	}
 
 	recommendedSource := "none"
@@ -637,14 +947,16 @@ func (s *Server) handleProtonPrivateKey(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"keyExists":          keyErr == nil,
-			"keyPath":            s.protonKeyPath,
-			"keySize":            fileSizeOrZero(keyInfo),
-			"keyModifiedAt":      fileTimeOrEmpty(keyInfo),
-			"passwordExists":     passErr == nil,
-			"passwordPath":       s.protonPassPath,
-			"passwordModifiedAt": fileTimeOrEmpty(passInfo),
-			"decryptReady":       keyErr == nil && passErr == nil,
+			"keyExists":            keyErr == nil,
+			"keyPath":              s.protonKeyPath,
+			"keyEncryptionKeyPath": s.protonKeyEncKeyPath,
+			"keySize":              fileSizeOrZero(keyInfo),
+			"keyModifiedAt":        fileTimeOrEmpty(keyInfo),
+			"passwordExists":       passErr == nil,
+			"passwordPath":         s.protonPassPath,
+			"passwordModifiedAt":   fileTimeOrEmpty(passInfo),
+			"encryptedAtRest":      isEncryptedPayloadFile(s.protonKeyPath) && isEncryptedPayloadFile(s.protonPassPath),
+			"decryptReady":         keyErr == nil && passErr == nil,
 		})
 	case http.MethodPost:
 		if err := r.ParseMultipartForm(16 << 20); err != nil {
@@ -681,26 +993,28 @@ func (s *Server) handleProtonPrivateKey(w http.ResponseWriter, r *http.Request) 
 				http.Error(w, "private key file is not an armored Proton private key", http.StatusBadRequest)
 				return
 			}
-			if err := atomicWritePrivateFile(s.protonKeyPath, payload); err != nil {
+			if err := writeEncryptedPrivateSecret(s.protonKeyPath, s.protonKeyEncKeyPath, payload); err != nil {
 				http.Error(w, "failed to save private key file", http.StatusInternalServerError)
 				return
 			}
 		}
 
 		if password != "" {
-			if err := atomicWritePrivateFile(s.protonPassPath, []byte(password)); err != nil {
+			if err := writeEncryptedPrivateSecret(s.protonPassPath, s.protonKeyEncKeyPath, []byte(password)); err != nil {
 				http.Error(w, "failed to save private key password", http.StatusInternalServerError)
 				return
 			}
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":              true,
-			"keyPath":         s.protonKeyPath,
-			"passwordPath":    s.protonPassPath,
-			"filename":        uploadedFilename(header),
-			"passwordUpdated": password != "",
-			"decryptReady":    protonPrivateKeyReady(s.protonKeyPath, s.protonPassPath),
+			"ok":                   true,
+			"keyPath":              s.protonKeyPath,
+			"keyEncryptionKeyPath": s.protonKeyEncKeyPath,
+			"passwordPath":         s.protonPassPath,
+			"filename":             uploadedFilename(header),
+			"passwordUpdated":      password != "",
+			"encryptedAtRest":      true,
+			"decryptReady":         protonPrivateKeyReady(s.protonKeyPath, s.protonPassPath),
 		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

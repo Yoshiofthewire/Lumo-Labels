@@ -4,8 +4,11 @@ go 1.26.4
 
 require (
 	github.com/ProtonMail/go-proton-api v0.4.0
+	github.com/pquerna/otp v1.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 
 require (
 	github.com/ProtonMail/bcrypt v0.0.0-20211005172633-e235017c1baf // indirect
