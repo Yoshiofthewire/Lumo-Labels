@@ -71,7 +71,7 @@ docker compose up --build -d
 
 Password change is required on first login.
 
-7. In **Config**, upload Proton auth (`mail_auth.json`).
+7. In **Config**, upload Proton auth (`mail_auth.json`). The backend converts the browser storage-state into a file-backed Proton session and keeps it refreshed automatically.
 
 8. In **Tuning**, sync/build labels and save `TUNING.md`.
 
@@ -158,6 +158,7 @@ Logs:
 
 - `GET /api/logs?file=<name>.log&lines=<n>`
 - `GET /api/logs/list`
+- `GET /api/debug/proton-token-state`
 
 Auth uploads/tests:
 
@@ -198,7 +199,9 @@ Log UI reads from `/api/logs` and `/api/logs/list`.
 - Poller tick timeout is long enough for large inbox sweeps.
 - Classify calls are serialized and paced to reduce model busy/flaky responses.
 - AI-credits exhaustion is tracked as a sticky health/state flag and auto-clears on successful classify.
-- Proton token upload converts storage-state cookies into API token + cookie material and restarts daemon process.
+- Proton token upload converts storage-state cookies into API token + cookie material, validates refreshability, and persists rotated tokens/cookies back to `/llama_lab/config/proton-auth.json`.
+- The daemon and API server both read from the same Proton auth file; hot reload picks up updated tokens from disk without a container restart.
+- If Proton invalidates the refresh token, the UI and daemon surface that state and you should re-upload a fresh `mail_auth.json`.
 
 ## Troubleshooting
 
@@ -219,9 +222,10 @@ docker compose restart
 
 ### Proton auth issues
 
-- Re-upload fresh `mail_auth.json` via Config.
 - Confirm `/llama_lab/config/proton-auth.json` exists and is parseable.
-- Check `daemon.log` and `app.log` for 401/422 refresh errors.
+- Check `daemon.log` and `app.log` for refresh errors and whether proactive refresh was disabled.
+- Use the Logs page debug card or `GET /api/debug/proton-token-state` to inspect safe auth metadata.
+- Re-upload fresh `mail_auth.json` via Config only when the refresh token has been revoked or the file is no longer refreshable.
 
 ### No labels applied
 
