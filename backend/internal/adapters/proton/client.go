@@ -105,6 +105,12 @@ func NewAPIClientFromEnv() *APIClient {
 // the cached client with a new one carrying fresh credentials and persists the
 // new tokens to disk so a restart always has valid credentials.
 func (c *APIClient) refreshClient(ctx context.Context) error {
+	unlock, err := lockProtonAuthFile()
+	if err != nil {
+		return fmt.Errorf("failed to acquire proton auth lock: %w", err)
+	}
+	defer unlock()
+
 	uid, _, ref, err := readTokenFile()
 	if err != nil {
 		return err
