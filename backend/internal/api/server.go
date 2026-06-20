@@ -1217,7 +1217,7 @@ func validateAndRotateProtonAuth(ctx context.Context, uid, access, refresh strin
 	// and the background poller do not attempt to refresh the single-use token
 	// simultaneously, which would cause one of them to fail with an invalid
 	// refresh token error.
-	unlock, err := lockProtonAuthFile()
+	unlock, err := lockProtonAuthFileForValidation()
 	if err != nil {
 		return "", "", "", false, nil, fmt.Errorf("failed to acquire proton auth lock: %w", err)
 	}
@@ -1252,6 +1252,25 @@ func validateAndRotateProtonAuth(ctx context.Context, uid, access, refresh strin
 	}
 
 	return resolvedUID, resolvedAccess, resolvedRefresh, payloadComplete, missingFields, nil
+}
+
+func lockProtonAuthFileForValidation() (func(), error) {
+	path := envOrDefault("PROTON_AUTH_FILE", "/llama_lab/config/proton-auth.json")
+	lockPath := path + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lockFile.Close()
+		return nil, err
+	}
+
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
 }
 
 func missingAuthFields(auth protonapi.Auth) []string {
