@@ -126,11 +126,12 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	c.refreshReason = ""
 	c.mu.Unlock()
 
-	// Persist the freshly issued tokens immediately. A write failure here means
-	// the rotated single-use refresh token only lives in memory, so a restart
-	// would fall back to the now-invalid token on disk. Treat it as a refresh
-	// failure so the caller backs off instead of trusting the divergent state.
-	if err := c.persistRotatedAuth(auth); err != nil {
+	// Persist the freshly issued tokens immediately while still holding the
+	// auth-file lock. A write failure here means the rotated single-use refresh
+	// token only lives in memory, so a restart would fall back to the now-invalid
+	// token on disk. Treat it as a refresh failure so the caller backs off
+	// instead of trusting the divergent state.
+	if err := c.persistRotatedAuthLocked(auth); err != nil {
 		return fmt.Errorf("persist rotated proton tokens: %w", err)
 	}
 
@@ -560,6 +561,16 @@ func writeCookieFile(cookies []protonCookie) error {
 	})
 }
 
+func writeCookieFileLocked(cookies []protonCookie) error {
+	if _, _, _, err := readTokenFile(); err != nil {
+		return err
+	}
+	return updateTokenFileLocked(func(existing map[string]any) {
+		existing["cookies"] = cookies
+		existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	})
+}
+
 // persistRotatedAuth is the single sink for credentials that go-proton-api
 // rotates (via AuthHandler callbacks or proactive refresh). It writes the new
 // access/refresh tokens, snapshots the rotated session cookies, records the
@@ -574,6 +585,57 @@ func (c *APIClient) persistRotatedAuth(auth protonapi.Auth) error {
 			strings.TrimSpace(auth.UID) != "", strings.TrimSpace(auth.AccessToken) != "", strings.TrimSpace(auth.RefreshToken) != "", tokenErr)
 	}
 	return tokenErr
+}
+
+func (c *APIClient) persistRotatedAuthLocked(auth protonapi.Auth) error {
+	tokenErr := writeTokenFileLocked(auth.UID, auth.AccessToken, auth.RefreshToken)
+	c.persistRotatedCookiesLocked()
+	c.recordPersistResult(tokenErr)
+	if tokenErr != nil {
+		log.Printf("proton auth: failed to persist rotated tokens; uid_present=%t access_present=%t refresh_present=%t error=%v",
+			strings.TrimSpace(auth.UID) != "", strings.TrimSpace(auth.AccessToken) != "", strings.TrimSpace(auth.RefreshToken) != "", tokenErr)
+	}
+	return tokenErr
+}
+
+func (c *APIClient) persistRotatedCookiesLocked() {
+	c.mu.Lock()
+	jar := c.jar
+	meta := c.cookieMeta
+	if jar == nil || len(meta) == 0 {
+		c.mu.Unlock()
+		return
+	}
+
+	latest := map[string]string{}
+	hosts := map[string]bool{}
+	for _, m := range meta {
+		hosts[strings.TrimPrefix(m.Domain, ".")] = true
+	}
+	for host := range hosts {
+		u := &url.URL{Scheme: "https", Host: host, Path: "/"}
+		for _, ck := range jar.Cookies(u) {
+			latest[ck.Name] = ck.Value
+		}
+	}
+
+	updated := make([]protonCookie, 0, len(meta))
+	changed := false
+	for _, m := range meta {
+		if v, ok := latest[m.Name]; ok && v != "" && v != m.Value {
+			m.Value = v
+			changed = true
+		}
+		updated = append(updated, m)
+	}
+	if !changed {
+		c.mu.Unlock()
+		return
+	}
+	c.cookieMeta = updated
+	c.mu.Unlock()
+
+	_ = writeCookieFileLocked(updated)
 }
 
 // recordPersistResult stores the most recent token-persistence outcome so it can
@@ -840,9 +902,20 @@ func writeTokenFile(uid, acc, ref string) error {
 	})
 }
 
+func writeTokenFileLocked(uid, acc, ref string) error {
+	if strings.TrimSpace(uid) == "" || strings.TrimSpace(acc) == "" || strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	return updateTokenFileLocked(func(existing map[string]any) {
+		existing["uid"] = uid
+		existing["accessToken"] = acc
+		existing["refreshToken"] = ref
+		existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	})
+}
+
 func updateTokenFile(mutate func(existing map[string]any)) error {
-	path := tokenFilePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(tokenFilePath()), 0o755); err != nil {
 		return err
 	}
 
@@ -852,6 +925,11 @@ func updateTokenFile(mutate func(existing map[string]any)) error {
 	}
 	defer unlock()
 
+	return updateTokenFileLocked(mutate)
+}
+
+func updateTokenFileLocked(mutate func(existing map[string]any)) error {
+	path := tokenFilePath()
 	// Preserve extra metadata fields (source, clientID, cookies, etc.).
 	existing := map[string]any{}
 	if b, err := os.ReadFile(path); err == nil {
