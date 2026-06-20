@@ -1,0 +1,32 @@
+{
+  "uid": "2uamgawzflctl5vucyj6cvoksyz2mbd7",
+  "accessToken": "em62p6q7qsnwinacay4jj3fwgtdvkyub",
+  "refreshToken": "llrgi2h5h7wjpudy5wudsvboo2dh4ygo",
+  "cookies": [
+    {
+      "name": "Domain",
+      "value": "proton.me",
+      "domain": "mail.proton.me",
+      "path": "/"
+    },
+    {
+      "name": "REFRESH-2uamgawzflctl5vucyj6cvoksyz2mbd7",
+      "value": "%7B%22ResponseType%22%3A%22token%22%2C%22ClientID%22%3A%22WebMail%22%2C%22GrantType%22%3A%22refresh_token%22%2C%22RefreshToken%22%3A%22llrgi2h5h7wjpudy5wudsvboo2dh4ygo%22%2C%22UID%22%3A%222uamgawzflctl5vucyj6cvoksyz2mbd7%22%7D",
+      "domain": "mail.proton.me",
+      "path": "/"
+    },
+    {
+      "name": "AUTH-2uamgawzflctl5vucyj6cvoksyz2mbd7",
+      "value": "em62p6q7qsnwinacay4jj3fwgtdvkyub",
+      "domain": "mail.proton.me",
+      "path": "/"
+    },
+    {
+      "name": "Tag",
+      "value": "beta",
+      "domain": "mail.proton.me",
+      "path": "/"
+    }
+  ],
+  "updatedAt": "2026-06-20T19:54:07.862Z"
+}
