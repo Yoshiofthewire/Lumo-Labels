@@ -1213,6 +1213,16 @@ type refreshCookiePayload struct {
 }
 
 func validateAndRotateProtonAuth(ctx context.Context, uid, access, refresh string, cookies []protonCookie) (string, string, string, bool, []string, error) {
+	// Use the same inter-process lock as the daemon to ensure that the API server
+	// and the background poller do not attempt to refresh the single-use token
+	// simultaneously, which would cause one of them to fail with an invalid
+	// refresh token error.
+	unlock, err := lockProtonAuthFile()
+	if err != nil {
+		return "", "", "", false, nil, fmt.Errorf("failed to acquire proton auth lock: %w", err)
+	}
+	defer unlock()
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 

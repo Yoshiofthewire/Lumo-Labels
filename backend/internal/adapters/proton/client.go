@@ -173,6 +173,9 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 			if isInvalidRefreshTokenError(err) {
 				log.Printf("proton auth: disabling proactive refresh until auth file changes because refresh token is invalid")
 				c.disableProactiveRefresh("refresh token is invalid")
+				// If the refresh token is invalid, do not proceed. The poller will back
+				// off and the health check will report the auth failure.
+				return nil, "", err
 			}
 			// Back off for one interval on any error so we do not burn through
 			// single-use Proton refresh tokens (400) or hit version mismatches (422).
@@ -837,19 +840,11 @@ func updateTokenFile(mutate func(existing map[string]any)) error {
 		return err
 	}
 
-	lockPath := path + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	unlock, err := lockProtonAuthFile()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to acquire proton auth lock: %w", err)
 	}
-	defer lockFile.Close()
-
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer func() {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-	}()
+	defer unlock()
 
 	// Preserve extra metadata fields (source, clientID, cookies, etc.).
 	existing := map[string]any{}
@@ -878,6 +873,24 @@ func updateTokenFile(mutate func(existing map[string]any)) error {
 	}
 
 	return nil
+}
+
+func lockProtonAuthFile() (func(), error) {
+	lockPath := tokenFilePath() + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		lockFile.Close()
+		return nil, err
+	}
+
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		lockFile.Close()
+	}, nil
 }
 
 func atomicWritePrivateFile(path string, payload []byte) error {
