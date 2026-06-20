@@ -136,8 +136,10 @@ type protonTokenFileDebug struct {
 }
 
 type protonRefreshDebug struct {
-	Disabled bool   `json:"disabled"`
-	Reason   string `json:"reason,omitempty"`
+	Disabled       bool   `json:"disabled"`
+	Reason         string `json:"reason,omitempty"`
+	LastPersistAt  string `json:"lastPersistAt,omitempty"`
+	LastPersistErr string `json:"lastPersistError,omitempty"`
 }
 
 func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +155,8 @@ func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) 
 		info := dbg.DebugAuthState()
 		refreshState.Disabled = info.RefreshDisabled
 		refreshState.Reason = info.RefreshReason
+		refreshState.LastPersistAt = info.LastPersistAt
+		refreshState.LastPersistErr = info.LastPersistErr
 	}
 
 	recommendedSource := "none"

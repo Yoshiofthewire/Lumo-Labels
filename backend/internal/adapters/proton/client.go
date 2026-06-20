@@ -56,11 +56,15 @@ type APIClient struct {
 	cookieMeta      []protonCookie
 	refreshDisabled bool
 	refreshReason   string
+	lastPersistAt   time.Time
+	lastPersistErr  string
 }
 
 type AuthDebugInfo struct {
 	RefreshDisabled bool   `json:"refreshDisabled"`
 	RefreshReason   string `json:"refreshReason,omitempty"`
+	LastPersistAt   string `json:"lastPersistAt,omitempty"`
+	LastPersistErr  string `json:"lastPersistError,omitempty"`
 }
 
 type tokenFile struct {
@@ -116,9 +120,13 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	c.refreshReason = ""
 	c.mu.Unlock()
 
-	// Persist the freshly issued tokens immediately.
-	_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
-	c.persistRotatedCookies()
+	// Persist the freshly issued tokens immediately. A write failure here means
+	// the rotated single-use refresh token only lives in memory, so a restart
+	// would fall back to the now-invalid token on disk. Treat it as a refresh
+	// failure so the caller backs off instead of trusting the divergent state.
+	if err := c.persistRotatedAuth(auth); err != nil {
+		return fmt.Errorf("persist rotated proton tokens: %w", err)
+	}
 
 	c.mu.Lock()
 	c.lastRefreshAt = time.Now()
@@ -126,8 +134,7 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	c.mu.Unlock()
 
 	pc.AddAuthHandler(func(a protonapi.Auth) {
-		_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
-		c.persistRotatedCookies()
+		_ = c.persistRotatedAuth(a)
 		c.mu.Lock()
 		c.tokenFileMTime = readTokenFileModTime()
 		c.mu.Unlock()
@@ -183,8 +190,7 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 				log.Printf("proton auth: rebuilt client from token file after refresh failure; source=%s uid_present=%t access_present=%t refresh_present=%t", source, strings.TrimSpace(uid) != "", strings.TrimSpace(acc) != "", strings.TrimSpace(ref) != "")
 				pc := c.mgr.NewClient(uid, acc, ref)
 				pc.AddAuthHandler(func(a protonapi.Auth) {
-					_ = writeTokenFile(a.UID, a.AccessToken, a.RefreshToken)
-					c.persistRotatedCookies()
+					_ = c.persistRotatedAuth(a)
 				})
 				pc.AddDeauthHandler(func() {
 					c.mu.Lock()
@@ -545,6 +551,35 @@ func writeCookieFile(cookies []protonCookie) error {
 	})
 }
 
+// persistRotatedAuth is the single sink for credentials that go-proton-api
+// rotates (via AuthHandler callbacks or proactive refresh). It writes the new
+// access/refresh tokens, snapshots the rotated session cookies, records the
+// outcome for observability, and returns the first persistence error so callers
+// can react instead of silently diverging from disk.
+func (c *APIClient) persistRotatedAuth(auth protonapi.Auth) error {
+	tokenErr := writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
+	c.persistRotatedCookies()
+	c.recordPersistResult(tokenErr)
+	if tokenErr != nil {
+		log.Printf("proton auth: failed to persist rotated tokens; uid_present=%t access_present=%t refresh_present=%t error=%v",
+			strings.TrimSpace(auth.UID) != "", strings.TrimSpace(auth.AccessToken) != "", strings.TrimSpace(auth.RefreshToken) != "", tokenErr)
+	}
+	return tokenErr
+}
+
+// recordPersistResult stores the most recent token-persistence outcome so it can
+// be surfaced through DebugAuthState without leaking secret material.
+func (c *APIClient) recordPersistResult(err error) {
+	c.mu.Lock()
+	c.lastPersistAt = time.Now()
+	if err != nil {
+		c.lastPersistErr = err.Error()
+	} else {
+		c.lastPersistErr = ""
+	}
+	c.mu.Unlock()
+}
+
 func isOutOfDateError(err error) bool {
 	if err == nil {
 		return false
@@ -599,10 +634,15 @@ func (c *APIClient) disableProactiveRefresh(reason string) {
 func (c *APIClient) DebugAuthState() AuthDebugInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return AuthDebugInfo{
+	info := AuthDebugInfo{
 		RefreshDisabled: c.refreshDisabled,
 		RefreshReason:   c.refreshReason,
+		LastPersistErr:  c.lastPersistErr,
 	}
+	if !c.lastPersistAt.IsZero() {
+		info.LastPersistAt = c.lastPersistAt.UTC().Format(time.RFC3339)
+	}
+	return info
 }
 
 func (c *APIClient) currentVersion() string {
@@ -694,8 +734,7 @@ func (c *APIClient) ensureClient(ctx context.Context) (*protonapi.Client, error)
 		pc := c.mgr.NewClient(uid, acc, ref)
 		// Persist refreshed tokens to disk so a restart always has valid credentials.
 		pc.AddAuthHandler(func(auth protonapi.Auth) {
-			_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
-			c.persistRotatedCookies()
+			_ = c.persistRotatedAuth(auth)
 		})
 		// Clear the cached client on de-auth (422) so ensureClient re-reads the
 		// token file on the next poll rather than permanently returning a dead client.
