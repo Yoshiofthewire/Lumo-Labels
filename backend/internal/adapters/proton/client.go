@@ -105,10 +105,12 @@ func NewAPIClientFromEnv() *APIClient {
 // the cached client with a new one carrying fresh credentials and persists the
 // new tokens to disk so a restart always has valid credentials.
 func (c *APIClient) refreshClient(ctx context.Context) error {
-	unlock, err := lockProtonAuthFile()
+	lockStartedAt := time.Now()
+	unlock, err := lockProtonAuthFileFor("refreshClient")
 	if err != nil {
 		return fmt.Errorf("failed to acquire proton auth lock: %w", err)
 	}
+	log.Printf("proton auth: acquired auth lock for refresh; wait_ms=%d", time.Since(lockStartedAt).Milliseconds())
 	defer unlock()
 
 	uid, _, ref, err := readTokenFile()
@@ -116,10 +118,13 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 		return err
 	}
 
+	refreshStartedAt := time.Now()
 	pc, auth, err := c.mgr.NewClientWithRefresh(ctx, uid, ref)
 	if err != nil {
+		log.Printf("proton auth: refresh call failed; duration_ms=%d error=%v", time.Since(refreshStartedAt).Milliseconds(), err)
 		return err
 	}
+	log.Printf("proton auth: refresh call succeeded; duration_ms=%d", time.Since(refreshStartedAt).Milliseconds())
 
 	c.mu.Lock()
 	c.refreshDisabled = false
@@ -131,9 +136,12 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 	// token only lives in memory, so a restart would fall back to the now-invalid
 	// token on disk. Treat it as a refresh failure so the caller backs off
 	// instead of trusting the divergent state.
+	persistStartedAt := time.Now()
 	if err := c.persistRotatedAuthLocked(auth); err != nil {
+		log.Printf("proton auth: locked persistence failed; duration_ms=%d error=%v", time.Since(persistStartedAt).Milliseconds(), err)
 		return fmt.Errorf("persist rotated proton tokens: %w", err)
 	}
+	log.Printf("proton auth: locked persistence succeeded; duration_ms=%d", time.Since(persistStartedAt).Milliseconds())
 
 	c.mu.Lock()
 	c.lastRefreshAt = time.Now()
@@ -919,7 +927,7 @@ func updateTokenFile(mutate func(existing map[string]any)) error {
 		return err
 	}
 
-	unlock, err := lockProtonAuthFile()
+	unlock, err := lockProtonAuthFileFor("updateTokenFile")
 	if err != nil {
 		return fmt.Errorf("failed to acquire proton auth lock: %w", err)
 	}
@@ -960,20 +968,28 @@ func updateTokenFileLocked(mutate func(existing map[string]any)) error {
 }
 
 func lockProtonAuthFile() (func(), error) {
+	return lockProtonAuthFileFor("unspecified")
+}
+
+func lockProtonAuthFileFor(reason string) (func(), error) {
 	lockPath := tokenFilePath() + ".lock"
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
 
+	startedAt := time.Now()
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		lockFile.Close()
 		return nil, err
 	}
+	log.Printf("proton auth: lock acquired; reason=%s wait_ms=%d", reason, time.Since(startedAt).Milliseconds())
+	holdStartedAt := time.Now()
 
 	return func() {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		lockFile.Close()
+		log.Printf("proton auth: lock released; reason=%s hold_ms=%d", reason, time.Since(holdStartedAt).Milliseconds())
 	}, nil
 }
 
