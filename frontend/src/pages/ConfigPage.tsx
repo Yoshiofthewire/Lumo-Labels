@@ -229,6 +229,11 @@ function parseDefinitions(content: string): Record<string, string> {
   return defs;
 }
 
+function isProtonCaptchaOrAbuseError(message: string): boolean {
+  const msg = message.toLowerCase();
+  return msg.includes("captcha") || msg.includes("appeal-abuse") || msg.includes("unusual activity") || msg.includes("temporarily limited access");
+}
+
 function buildTuningTemplate(labels: string[], defs: Record<string, string>): string {
   const ordered = labels.filter(Boolean);
   const lines: string[] = [];
@@ -576,7 +581,15 @@ export function ConfigPage() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown error";
       setProtonLoginTone("error");
-      setProtonLoginStatus(`Failed to validate Proton login credentials: ${msg}`);
+      if (isProtonCaptchaOrAbuseError(msg)) {
+        setProtonLoginStatus(
+          "Proton rejected API login due to CAPTCHA/anti-abuse checks. Use Browser Login Bootstrap below: run node scripts/generate_mail_auth.js, complete interactive login in a real browser, then upload proton-bootstrap.json."
+        );
+        setBootstrapTone("warning");
+        setBootstrapStatus("CAPTCHA/abuse block detected during credential validation. Continue with Browser Login Bootstrap.");
+      } else {
+        setProtonLoginStatus(`Failed to validate Proton login credentials: ${msg}`);
+      }
     } finally {
       setProtonLoginValidateBusy(false);
     }
