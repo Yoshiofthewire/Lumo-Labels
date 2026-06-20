@@ -41,19 +41,26 @@ type Client interface {
 const proactiveRefreshInterval = 45 * time.Minute
 
 type APIClient struct {
-	mu             sync.Mutex
-	mgr            *protonapi.Manager
-	client         *protonapi.Client
-	labelByKey     map[string]string
-	tokenFileMTime time.Time
-	host           string
-	versions       []string
-	versionIdx     int
-	skipRefresh    bool
-	lastRefreshAt  time.Time
-	nextRefreshAt  time.Time
-	jar            http.CookieJar
-	cookieMeta     []protonCookie
+	mu              sync.Mutex
+	mgr             *protonapi.Manager
+	client          *protonapi.Client
+	labelByKey      map[string]string
+	tokenFileMTime  time.Time
+	host            string
+	versions        []string
+	versionIdx      int
+	skipRefresh     bool
+	lastRefreshAt   time.Time
+	nextRefreshAt   time.Time
+	jar             http.CookieJar
+	cookieMeta      []protonCookie
+	refreshDisabled bool
+	refreshReason   string
+}
+
+type AuthDebugInfo struct {
+	RefreshDisabled bool   `json:"refreshDisabled"`
+	RefreshReason   string `json:"refreshReason,omitempty"`
 }
 
 type tokenFile struct {
@@ -104,6 +111,11 @@ func (c *APIClient) refreshClient(ctx context.Context) error {
 		return err
 	}
 
+	c.mu.Lock()
+	c.refreshDisabled = false
+	c.refreshReason = ""
+	c.mu.Unlock()
+
 	// Persist the freshly issued tokens immediately.
 	_ = writeTokenFile(auth.UID, auth.AccessToken, auth.RefreshToken)
 	c.persistRotatedCookies()
@@ -151,6 +163,10 @@ func (c *APIClient) ListUnreadInbox(ctx context.Context, sinceCheckpoint string)
 	if !c.shouldSkipRefresh() {
 		if err := c.refreshClient(ctx); err != nil {
 			log.Printf("proton auth: proactive refresh failed; falling back to token-file client: %v", err)
+			if isInvalidRefreshTokenError(err) {
+				log.Printf("proton auth: disabling proactive refresh until auth file changes because refresh token is invalid")
+				c.disableProactiveRefresh("refresh token is invalid")
+			}
 			// Back off for one interval on any error so we do not burn through
 			// single-use Proton refresh tokens (400) or hit version mismatches (422).
 			c.mu.Lock()
@@ -251,6 +267,8 @@ func (c *APIClient) reloadClientOnTokenFileChange() {
 	c.client = nil
 	c.labelByKey = map[string]string{}
 	c.skipRefresh = false
+	c.refreshDisabled = false
+	c.refreshReason = ""
 	c.nextRefreshAt = time.Time{}
 }
 
@@ -570,10 +588,21 @@ func (c *APIClient) shouldSkipRefresh() bool {
 	return time.Now().Before(c.nextRefreshAt)
 }
 
-func (c *APIClient) disableProactiveRefresh() {
+func (c *APIClient) disableProactiveRefresh(reason string) {
 	c.mu.Lock()
 	c.skipRefresh = true
+	c.refreshDisabled = true
+	c.refreshReason = strings.TrimSpace(reason)
 	c.mu.Unlock()
+}
+
+func (c *APIClient) DebugAuthState() AuthDebugInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return AuthDebugInfo{
+		RefreshDisabled: c.refreshDisabled,
+		RefreshReason:   c.refreshReason,
+	}
 }
 
 func (c *APIClient) currentVersion() string {
@@ -680,6 +709,20 @@ func (c *APIClient) ensureClient(ctx context.Context) (*protonapi.Client, error)
 	}
 
 	return nil, errors.New("missing proton token credentials in token file")
+}
+
+func isInvalidRefreshTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "invalid refresh token") {
+		return true
+	}
+	if strings.Contains(msg, "400") && strings.Contains(msg, "refresh token") {
+		return true
+	}
+	return false
 }
 
 func tokenFilePath() string {

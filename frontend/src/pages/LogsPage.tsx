@@ -36,6 +36,10 @@ type ProtonTokenDebugResponse = {
   recommendedSource: "main" | "snapshot" | "none";
   main: ProtonTokenDebugState;
   snapshot: ProtonTokenDebugState;
+  refresh?: {
+    disabled: boolean;
+    reason?: string;
+  };
 };
 
 function sortLogFiles(files: string[]): string[] {
@@ -168,6 +172,11 @@ function ProtonTokenDebugCard() {
           <div style={{ marginTop: "0.6rem", marginBottom: "0.6rem", fontSize: "0.78rem", opacity: 0.85 }}>
             Recommended source: <strong>{data.recommendedSource}</strong>
           </div>
+          {data.refresh?.disabled && (
+            <div style={{ marginBottom: "0.6rem", padding: "0.5rem 0.65rem", borderRadius: 6, border: "1px solid rgba(255,204,102,0.35)", background: "rgba(255,204,102,0.08)", fontSize: "0.78rem" }}>
+              Proactive refresh is disabled{data.refresh.reason ? `: ${data.refresh.reason}` : ""}.
+            </div>
+          )}
           <div style={{ display: "grid", gap: "0.6rem", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
             <TokenFileCard title="Main auth file" state={data.main} recommended={data.recommendedSource === "main"} />
             <TokenFileCard title="Snapshot auth file" state={data.snapshot} recommended={data.recommendedSource === "snapshot"} />

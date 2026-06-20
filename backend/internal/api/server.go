@@ -135,6 +135,11 @@ type protonTokenFileDebug struct {
 	Error               string   `json:"error,omitempty"`
 }
 
+type protonRefreshDebug struct {
+	Disabled bool   `json:"disabled"`
+	Reason   string `json:"reason,omitempty"`
+}
+
 func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -143,6 +148,12 @@ func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) 
 
 	mainState := readProtonTokenFileDebug(s.protonAuthPath)
 	snapshotState := readProtonTokenFileDebug(s.protonAuthPath + ".last-good")
+	refreshState := protonRefreshDebug{}
+	if dbg, ok := s.proton.(interface{ DebugAuthState() proton.AuthDebugInfo }); ok {
+		info := dbg.DebugAuthState()
+		refreshState.Disabled = info.RefreshDisabled
+		refreshState.Reason = info.RefreshReason
+	}
 
 	recommendedSource := "none"
 	if mainState.TokenReady {
@@ -155,6 +166,7 @@ func (s *Server) handleProtonTokenState(w http.ResponseWriter, r *http.Request) 
 		"recommendedSource": recommendedSource,
 		"main":              mainState,
 		"snapshot":          snapshotState,
+		"refresh":           refreshState,
 	})
 }
 
