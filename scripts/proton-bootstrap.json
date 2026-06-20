@@ -1,7 +1,7 @@
 {
-  "uid": "b4yqvda33l3arc45qkiibgy3jlrv7jko",
-  "accessToken": "grghxuci76ymzifhr5yyl6ucoxr3wnvk",
-  "refreshToken": "qlzawwuxm5qkeacltmbcn6ixwnpxoyp7",
+  "uid": "geno6aduumpet7vxocieofvhgh4huoqh",
+  "accessToken": "5jdlnf763oqnsk434t2yuon3h2ndk7no",
+  "refreshToken": "pmiocy3m5yxksamoqkfq6i4jeno3s5zh",
   "cookies": [
     {
       "name": "Domain",
@@ -10,14 +10,14 @@
       "path": "/"
     },
     {
-      "name": "REFRESH-b4yqvda33l3arc45qkiibgy3jlrv7jko",
-      "value": "%7B%22ResponseType%22%3A%22token%22%2C%22ClientID%22%3A%22WebMail%22%2C%22GrantType%22%3A%22refresh_token%22%2C%22RefreshToken%22%3A%22qlzawwuxm5qkeacltmbcn6ixwnpxoyp7%22%2C%22UID%22%3A%22b4yqvda33l3arc45qkiibgy3jlrv7jko%22%7D",
+      "name": "REFRESH-geno6aduumpet7vxocieofvhgh4huoqh",
+      "value": "%7B%22ResponseType%22%3A%22token%22%2C%22ClientID%22%3A%22WebMail%22%2C%22GrantType%22%3A%22refresh_token%22%2C%22RefreshToken%22%3A%22pmiocy3m5yxksamoqkfq6i4jeno3s5zh%22%2C%22UID%22%3A%22geno6aduumpet7vxocieofvhgh4huoqh%22%7D",
       "domain": "mail.proton.me",
       "path": "/"
     },
     {
-      "name": "AUTH-b4yqvda33l3arc45qkiibgy3jlrv7jko",
-      "value": "grghxuci76ymzifhr5yyl6ucoxr3wnvk",
+      "name": "AUTH-geno6aduumpet7vxocieofvhgh4huoqh",
+      "value": "5jdlnf763oqnsk434t2yuon3h2ndk7no",
       "domain": "mail.proton.me",
       "path": "/"
     },
@@ -28,5 +28,5 @@
       "path": "/"
     }
   ],
-  "updatedAt": "2026-06-20T23:18:54.573Z"
+  "updatedAt": "2026-06-20T23:31:31.368Z"
 }
