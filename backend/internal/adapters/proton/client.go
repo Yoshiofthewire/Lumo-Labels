@@ -558,6 +558,7 @@ func protonAppVersionsFromEnv() []string {
 		add("web-mail@6.10.0.0")
 		add("web-mail@6.0.0.0")
 		add("web-mail@5.0.0.0")
+		add("Other")
 	}
 
 	return out

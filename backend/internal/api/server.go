@@ -222,6 +222,14 @@ type protonLoginValidateRequest struct {
 	TOTPSecret string `json:"totpSecret"`
 }
 
+type protonLoginValidationAttempt struct {
+	AppVersion   string `json:"appVersion"`
+	OK           bool   `json:"ok"`
+	Stage        string `json:"stage,omitempty"`
+	Error        string `json:"error,omitempty"`
+	RequiresTOTP bool   `json:"requiresTOTP,omitempty"`
+}
+
 func (s *Server) handleProtonLoginValidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -259,37 +267,110 @@ func (s *Server) handleProtonLoginValidate(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	mgr := protonapi.New(protonapi.WithAppVersion("web-mail@6.10.0.0"))
+	appVersions := protonLoginAppVersionsFromEnv()
+	attempts := make([]protonLoginValidationAttempt, 0, len(appVersions))
+
+	for _, appVersion := range appVersions {
+		attempt := validateProtonLoginWithAppVersion(ctx, username, password, totpSecret, appVersion)
+		attempts = append(attempts, attempt)
+		if attempt.OK {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":           true,
+				"requiresTOTP": attempt.RequiresTOTP,
+				"appVersion":   attempt.AppVersion,
+				"attempts":     attempts,
+			})
+			return
+		}
+	}
+
+	last := attempts[len(attempts)-1]
+	resp := map[string]any{
+		"ok":         false,
+		"error":      last.Error,
+		"stage":      last.Stage,
+		"appVersion": last.AppVersion,
+		"attempts":   attempts,
+	}
+	if last.RequiresTOTP {
+		resp["requiresTOTP"] = true
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, resp)
+}
+
+func validateProtonLoginWithAppVersion(ctx context.Context, username, password, totpSecret, appVersion string) protonLoginValidationAttempt {
+	attempt := protonLoginValidationAttempt{AppVersion: strings.TrimSpace(appVersion)}
+	mgr := protonapi.New(protonapi.WithAppVersion(attempt.AppVersion))
+
 	client, auth, err := mgr.NewClientWithLogin(ctx, username, []byte(password))
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error(), "stage": "login"})
-		return
+		attempt.Stage = "login"
+		attempt.Error = err.Error()
+		return attempt
 	}
 	defer client.Close()
 
 	needsTOTP := auth.TwoFA.Enabled&protonapi.HasTOTP != 0
+	attempt.RequiresTOTP = needsTOTP
 	if needsTOTP {
 		if strings.TrimSpace(totpSecret) == "" {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "TOTP required but totpSecret is missing", "stage": "2fa", "requiresTOTP": true})
-			return
+			attempt.Stage = "2fa"
+			attempt.Error = "TOTP required but totpSecret is missing"
+			return attempt
 		}
 		code, err := totp.GenerateCode(strings.TrimSpace(totpSecret), time.Now())
 		if err != nil {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": "failed to generate TOTP code", "stage": "2fa", "requiresTOTP": true})
-			return
+			attempt.Stage = "2fa"
+			attempt.Error = "failed to generate TOTP code"
+			return attempt
 		}
 		if err := client.Auth2FA(ctx, protonapi.Auth2FAReq{TwoFactorCode: code}); err != nil {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error(), "stage": "2fa", "requiresTOTP": true})
-			return
+			attempt.Stage = "2fa"
+			attempt.Error = err.Error()
+			return attempt
 		}
 	}
 
 	if _, err := client.GetUser(ctx); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"ok": false, "error": err.Error(), "stage": "user"})
-		return
+		attempt.Stage = "user"
+		attempt.Error = err.Error()
+		return attempt
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "requiresTOTP": needsTOTP})
+	attempt.OK = true
+	return attempt
+}
+
+func protonLoginAppVersionsFromEnv() []string {
+	primary := strings.TrimSpace(os.Getenv("PROTON_LOGIN_APP_VERSION"))
+	fallbackRaw := strings.TrimSpace(os.Getenv("PROTON_LOGIN_APP_VERSION_FALLBACKS"))
+
+	out := make([]string, 0, 4)
+	seen := map[string]bool{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		key := strings.ToLower(v)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, v)
+	}
+
+	add(primary)
+	for _, v := range strings.Split(fallbackRaw, ",") {
+		add(v)
+	}
+
+	if len(out) == 0 {
+		add("web-mail@6.10.0.0")
+		add("Other")
+	}
+
+	return out
 }
 
 type encryptedProtonLoginPayload struct {
