@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { deleteJSON, getJSON, postFormData, postJSON, putJSON } from "../api/client";
+import { deleteJSON, getJSON, postBootstrapProtonAuth, postFormData, postJSON, putJSON } from "../api/client";
 
 type AppConfig = {
   timezone: string;
@@ -308,6 +308,10 @@ export function ConfigPage() {
   const [protonPrivateKeyStatus, setProtonPrivateKeyStatus] = useState("");
   const [protonPrivateKeyTone, setProtonPrivateKeyTone] = useState<LlamaAuthNoticeTone>("idle");
   const [protonPrivateKeyBusy, setProtonPrivateKeyBusy] = useState(false);
+  const [bootstrapFile, setBootstrapFile] = useState<File | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] = useState("");
+  const [bootstrapTone, setBootstrapTone] = useState<LlamaAuthNoticeTone>("idle");
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
 
   function hydrateFromTuning(content: string, fallbackLabels: string[]) {
     const parsedLabels = parsePriorityLabels(content);
@@ -636,6 +640,46 @@ export function ConfigPage() {
     }
   }
 
+  async function uploadBootstrapTokens() {
+    if (!bootstrapFile) {
+      setBootstrapTone("error");
+      setBootstrapStatus("Select a proton-bootstrap.json file first.");
+      return;
+    }
+    setBootstrapBusy(true);
+    setBootstrapStatus("");
+    try {
+      const text = await bootstrapFile.text();
+      const parsed = JSON.parse(text) as {
+        uid?: string;
+        accessToken?: string;
+        refreshToken?: string;
+        cookies?: Array<{ name: string; value: string; domain: string; path: string }>;
+      };
+      if (!parsed.uid || !parsed.accessToken || !parsed.refreshToken) {
+        setBootstrapTone("error");
+        setBootstrapStatus("File is missing uid, accessToken, or refreshToken. Re-run generate_mail_auth.js.");
+        return;
+      }
+      const result = await postBootstrapProtonAuth({
+        uid: parsed.uid,
+        accessToken: parsed.accessToken,
+        refreshToken: parsed.refreshToken,
+        cookies: parsed.cookies ?? [],
+      });
+      setBootstrapTone("success");
+      setBootstrapStatus(`Session injected (uid: ${result.uid}, ${result.cookieCount} cookies). The daemon will use these tokens immediately.`);
+      setBootstrapFile(null);
+      void loadProtonAuthStatus();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown error";
+      setBootstrapTone("error");
+      setBootstrapStatus(`Failed to inject bootstrap session: ${msg}`);
+    } finally {
+      setBootstrapBusy(false);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Configuration</h2>
@@ -716,6 +760,24 @@ export function ConfigPage() {
         </div>
       ) : null}
       {protonLoginStatus ? <p className={`notice notice-${protonLoginTone}`}>{protonLoginStatus}</p> : null}
+
+      <h4>Browser Login Bootstrap</h4>
+      <p>
+        If Proton blocks automated login with a CAPTCHA challenge, use this to inject a session extracted from a real browser login.
+        Run <code>node scripts/generate_mail_auth.js</code> on a machine with a display, log in manually, then upload the generated <code>proton-bootstrap.json</code>.
+      </p>
+      <label>
+        <div>proton-bootstrap.json</div>
+        <input
+          type="file"
+          accept="application/json,.json"
+          onChange={(e: ChangeEvent<HTMLInputElement>) => setBootstrapFile(e.target.files?.[0] ?? null)}
+        />
+      </label>
+      <button type="button" onClick={uploadBootstrapTokens} disabled={bootstrapBusy || !bootstrapFile}>
+        {bootstrapBusy ? "Injecting..." : "Upload Bootstrap Tokens"}
+      </button>
+      {bootstrapStatus ? <p className={`notice notice-${bootstrapTone}`}>{bootstrapStatus}</p> : null}
 
       <hr />
       <h3>Proton Private Key</h3>

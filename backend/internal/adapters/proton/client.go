@@ -60,6 +60,7 @@ type APIClient struct {
 	cookieMeta      []protonCookie
 	refreshDisabled bool
 	refreshReason   string
+	captchaRequired bool
 	lastPersistAt   time.Time
 	lastPersistErr  string
 	lastReloginAt   time.Time
@@ -69,10 +70,29 @@ type APIClient struct {
 type AuthDebugInfo struct {
 	RefreshDisabled bool   `json:"refreshDisabled"`
 	RefreshReason   string `json:"refreshReason,omitempty"`
+	CaptchaRequired bool   `json:"captchaRequired"`
 	LastPersistAt   string `json:"lastPersistAt,omitempty"`
 	LastPersistErr  string `json:"lastPersistError,omitempty"`
 	LastReloginAt   string `json:"lastReloginAt,omitempty"`
 	LastReloginErr  string `json:"lastReloginError,omitempty"`
+}
+
+// SessionBootstrap holds the browser-extracted tokens and session cookies used
+// to initialise the Proton client without going through the login API, bypassing
+// any CAPTCHA challenge that blocks automated NewClientWithLogin calls.
+type SessionBootstrap struct {
+	UID          string            `json:"uid"`
+	AccessToken  string            `json:"accessToken"`
+	RefreshToken string            `json:"refreshToken"`
+	Cookies      []BootstrapCookie `json:"cookies"`
+}
+
+// BootstrapCookie is an exported cookie type used in SessionBootstrap.
+type BootstrapCookie struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Domain string `json:"domain"`
+	Path   string `json:"path"`
 }
 
 type tokenFile struct {
@@ -218,6 +238,12 @@ func (c *APIClient) tryCredentialReloginLocked(ctx context.Context) error {
 
 	pc, auth, err := c.mgr.NewClientWithLogin(ctx, creds.Username, []byte(creds.Password))
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "captcha") {
+			c.mu.Lock()
+			c.captchaRequired = true
+			c.mu.Unlock()
+			log.Printf("proton auth: CAPTCHA required during credential re-login; use browser bootstrap to bypass")
+		}
 		reloginErr = fmt.Errorf("login with username/password failed: %w", err)
 		return reloginErr
 	}
@@ -821,6 +847,7 @@ func (c *APIClient) DebugAuthState() AuthDebugInfo {
 	info := AuthDebugInfo{
 		RefreshDisabled: c.refreshDisabled,
 		RefreshReason:   c.refreshReason,
+		CaptchaRequired: c.captchaRequired,
 		LastPersistErr:  c.lastPersistErr,
 		LastReloginErr:  c.lastReloginErr,
 	}
@@ -831,6 +858,84 @@ func (c *APIClient) DebugAuthState() AuthDebugInfo {
 		info.LastReloginAt = c.lastReloginAt.UTC().Format(time.RFC3339)
 	}
 	return info
+}
+
+// InjectSession replaces the running client with one built directly from
+// browser-extracted tokens. This path makes no Proton API calls so it is never
+// blocked by a CAPTCHA challenge. The caller must hold no locks.
+func (c *APIClient) InjectSession(b SessionBootstrap) error {
+	uid := strings.TrimSpace(b.UID)
+	acc := strings.TrimSpace(b.AccessToken)
+	ref := strings.TrimSpace(b.RefreshToken)
+	if uid == "" || acc == "" || ref == "" {
+		return errors.New("uid, accessToken, and refreshToken must all be non-empty")
+	}
+
+	// Write tokens + cookies to disk while holding the file lock.
+	unlock, err := lockProtonAuthFileFor("InjectSession")
+	if err != nil {
+		return fmt.Errorf("acquire auth lock: %w", err)
+	}
+	defer unlock()
+
+	cookies := make([]protonCookie, 0, len(b.Cookies))
+	for _, bc := range b.Cookies {
+		cookies = append(cookies, protonCookie{
+			Name:   bc.Name,
+			Value:  bc.Value,
+			Domain: bc.Domain,
+			Path:   bc.Path,
+		})
+	}
+
+	if err := updateTokenFileLocked(func(existing map[string]any) {
+		existing["uid"] = uid
+		existing["accessToken"] = acc
+		existing["refreshToken"] = ref
+		existing["cookies"] = cookies
+		existing["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+	}); err != nil {
+		return fmt.Errorf("write bootstrap tokens: %w", err)
+	}
+
+	// Build a new manager + client using the injected tokens.
+	jar := buildCookieJar(cookies)
+
+	c.mu.Lock()
+	version := ""
+	if len(c.versions) > 0 {
+		c.versionIdx = 0
+		version = c.versions[0]
+	}
+	newMgr := newManager(c.host, version, jar)
+	pc := newMgr.NewClient(uid, acc, ref)
+	pc.AddAuthHandler(func(a protonapi.Auth) {
+		_ = c.persistRotatedAuth(a)
+		c.mu.Lock()
+		c.tokenFileMTime = readTokenFileModTime()
+		c.mu.Unlock()
+	})
+	pc.AddDeauthHandler(func() {
+		c.mu.Lock()
+		c.client = nil
+		c.mu.Unlock()
+	})
+	c.mgr = newMgr
+	c.client = pc
+	c.jar = jar
+	c.cookieMeta = cookies
+	c.tokenFileMTime = readTokenFileModTime()
+	c.skipRefresh = false
+	c.refreshDisabled = false
+	c.refreshReason = ""
+	c.captchaRequired = false
+	c.lastRefreshAt = time.Now()
+	c.nextRefreshAt = time.Now().Add(proactiveRefreshInterval)
+	c.labelByKey = map[string]string{}
+	c.mu.Unlock()
+
+	log.Printf("proton auth: session injected via browser bootstrap; uid=%s cookie_count=%d", uid, len(cookies))
+	return nil
 }
 
 func (c *APIClient) currentVersion() string {

@@ -39,6 +39,7 @@ type ProtonTokenDebugResponse = {
   refresh?: {
     disabled: boolean;
     reason?: string;
+    captchaRequired?: boolean;
     lastPersistAt?: string;
     lastPersistError?: string;
     lastReloginAt?: string;
@@ -176,6 +177,17 @@ function ProtonTokenDebugCard() {
           <div style={{ marginTop: "0.6rem", marginBottom: "0.6rem", fontSize: "0.78rem", opacity: 0.85 }}>
             Recommended source: <strong>{data.recommendedSource}</strong>
           </div>
+          {data.refresh?.captchaRequired && (
+            <div style={{ marginBottom: "0.6rem", padding: "0.55rem 0.65rem", borderRadius: 6, border: "1px solid rgba(255,204,102,0.6)", background: "rgba(255,204,102,0.12)", fontSize: "0.8rem" }}>
+              <strong>CAPTCHA Required</strong> — Proton blocked automated login. Use the Browser Login Bootstrap to recover:
+              <ol style={{ margin: "0.4rem 0 0 1.2rem", padding: 0, lineHeight: 1.7 }}>
+                <li>Run <code>node scripts/generate_mail_auth.js</code> on a machine with a display</li>
+                <li>A Firefox window opens — log in to Proton Mail manually</li>
+                <li>Press <kbd>Enter</kbd> in the terminal once the inbox is visible</li>
+                <li>Upload the generated <code>proton-bootstrap.json</code> via <strong>Config → Proton Authentication → Browser Login Bootstrap</strong></li>
+              </ol>
+            </div>
+          )}
           {data.refresh?.disabled && (
             <div style={{ marginBottom: "0.6rem", padding: "0.5rem 0.65rem", borderRadius: 6, border: "1px solid rgba(255,204,102,0.35)", background: "rgba(255,204,102,0.08)", fontSize: "0.78rem" }}>
               Proactive refresh is disabled{data.refresh.reason ? `: ${data.refresh.reason}` : ""}.

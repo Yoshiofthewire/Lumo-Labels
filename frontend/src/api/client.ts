@@ -57,3 +57,12 @@ export async function deleteJSON<T>(path: string): Promise<T> {
     method: "DELETE"
   });
 }
+
+export async function postBootstrapProtonAuth(body: {
+  uid: string;
+  accessToken: string;
+  refreshToken: string;
+  cookies: Array<{ name: string; value: string; domain: string; path: string }>;
+}): Promise<{ ok: boolean; uid: string; cookieCount: number }> {
+  return postJSON("/api/proton/auth/bootstrap", body);
+}

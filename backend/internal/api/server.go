@@ -92,6 +92,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/logs/list", s.withAuth(s.handleLogsList))
 	mux.HandleFunc("/api/llama/auth", s.withAuth(s.handleLlamaAuth))
 	mux.HandleFunc("/api/proton/auth", s.withAuth(s.handleProtonAuth))
+	mux.HandleFunc("/api/proton/auth/bootstrap", s.withAuth(s.handleProtonAuthBootstrap))
 	mux.HandleFunc("/api/proton/login", s.withAuth(s.handleProtonLogin))
 	mux.HandleFunc("/api/proton/login/validate", s.withAuth(s.handleProtonLoginValidate))
 	mux.HandleFunc("/api/debug/proton-token-state", s.withAuth(s.handleProtonTokenState))
@@ -762,6 +763,46 @@ func (s *Server) handleLlamaAuth(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// protonSessionInjector is satisfied by *proton.APIClient via a type assertion.
+// It is not part of the proton.Client interface to keep that interface minimal.
+type protonSessionInjector interface {
+	InjectSession(b proton.SessionBootstrap) error
+}
+
+func (s *Server) handleProtonAuthBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var b proton.SessionBootstrap
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&b); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(b.UID) == "" || strings.TrimSpace(b.AccessToken) == "" || strings.TrimSpace(b.RefreshToken) == "" {
+		http.Error(w, "uid, accessToken, and refreshToken are required", http.StatusBadRequest)
+		return
+	}
+
+	inj, ok := s.proton.(protonSessionInjector)
+	if !ok {
+		http.Error(w, "proton client does not support session injection", http.StatusNotImplemented)
+		return
+	}
+
+	if err := inj.InjectSession(b); err != nil {
+		http.Error(w, "failed to inject session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"uid":         strings.TrimSpace(b.UID),
+		"cookieCount": len(b.Cookies),
+	})
 }
 
 func (s *Server) handleProtonAuth(w http.ResponseWriter, r *http.Request) {
