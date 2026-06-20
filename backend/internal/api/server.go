@@ -285,9 +285,10 @@ func (s *Server) handleProtonLoginValidate(w http.ResponseWriter, r *http.Reques
 	}
 
 	last := attempts[len(attempts)-1]
+	detailedErr := buildProtonLoginAttemptError(attempts)
 	resp := map[string]any{
 		"ok":         false,
-		"error":      last.Error,
+		"error":      detailedErr,
 		"stage":      last.Stage,
 		"appVersion": last.AppVersion,
 		"attempts":   attempts,
@@ -366,11 +367,40 @@ func protonLoginAppVersionsFromEnv() []string {
 	}
 
 	if len(out) == 0 {
-		add("web-mail@6.10.0.0")
 		add("Other")
+		add("web-mail@6.10.0.0")
 	}
 
 	return out
+}
+
+func buildProtonLoginAttemptError(attempts []protonLoginValidationAttempt) string {
+	if len(attempts) == 0 {
+		return "proton login validation failed"
+	}
+	last := attempts[len(attempts)-1]
+	parts := make([]string, 0, len(attempts))
+	for _, a := range attempts {
+		label := strings.TrimSpace(a.AppVersion)
+		if label == "" {
+			label = "(empty)"
+		}
+		stage := strings.TrimSpace(a.Stage)
+		if stage == "" {
+			stage = "unknown"
+		}
+		errMsg := strings.TrimSpace(a.Error)
+		if errMsg == "" {
+			errMsg = "no error message"
+		}
+		parts = append(parts, fmt.Sprintf("%s/%s: %s", label, stage, errMsg))
+	}
+
+	base := strings.TrimSpace(last.Error)
+	if base == "" {
+		base = "proton login validation failed"
+	}
+	return base + " | attempts: " + strings.Join(parts, " ; ")
 }
 
 type encryptedProtonLoginPayload struct {
