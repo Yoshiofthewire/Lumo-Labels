@@ -36,6 +36,5 @@ share/ollama/models/
 **/auth.json
 **/*_auth.json
 **/llama-auth.json
-**/proton-auth.json
-**/proton-bootstrap.json
+**/proton-*.json
 **/admin.env
