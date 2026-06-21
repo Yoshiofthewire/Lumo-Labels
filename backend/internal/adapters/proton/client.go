@@ -554,11 +554,12 @@ func protonAppVersionsFromEnv() []string {
 	}
 
 	if len(out) == 0 {
-		// Try newer web-mail versions first, then fallback to legacy.
+		add("Other")
+		// Keep the session identity generic first; some Proton accounts reject
+		// the web-mail app versions with CAPTCHA/abuse gating.
 		add("web-mail@6.10.0.0")
 		add("web-mail@6.0.0.0")
 		add("web-mail@5.0.0.0")
-		add("Other")
 	}
 
 	return out
