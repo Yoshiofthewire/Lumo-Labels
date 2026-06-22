@@ -138,7 +138,36 @@ func NewAPIClientFromEnv() *APIClient {
 	}
 	client.cookieMeta = loadProtonCookies()
 	client.jar = buildCookieJar(client.cookieMeta)
+	hasParentDomain := false
+	for _, c := range client.cookieMeta {
+		if c.Domain == ".proton.me" || c.Domain == "proton.me" {
+			hasParentDomain = true
+			break
+		}
+	}
+	if len(client.cookieMeta) > 0 && !hasParentDomain {
+		log.Printf("proton auth: WARNING: no .proton.me parent-domain cookies found in auth file; refresh will fail with 400 Invalid refresh token")
+	}
 	client.mgr = newManager(host, client.currentVersion(), client.jar)
+
+	// Warn early if parent-domain cookies are absent. The Proton refresh endpoint
+	// (api.proton.me/auth/v4/refresh) requires the .proton.me Session-Id cookie.
+	// Without it every proactive refresh fails with 400 and burns the single-use
+	// refresh token chain. The bootstrap script previously only captured
+	// mail.proton.me cookies, missing this shared cookie.
+	if len(client.cookieMeta) > 0 {
+		hasParentDomain := false
+		for _, c := range client.cookieMeta {
+			if c.Domain == ".proton.me" || c.Domain == "proton.me" {
+				hasParentDomain = true
+				break
+			}
+		}
+		if !hasParentDomain {
+			log.Printf("proton auth: WARNING: auth file has cookies but none from .proton.me parent domain; proactive token refresh will fail with 400 — re-run generate_mail_auth.js and re-upload bootstrap")
+		}
+	}
+
 	return client
 }
 

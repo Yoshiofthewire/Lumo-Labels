@@ -74,13 +74,23 @@ const fs = require('fs');
   }
   const accessToken = authCookie.value;
 
-  // Collect the session cookies needed for the refresh endpoint
-  const SESSION_COOKIE_NAMES = new Set([
-    'Session-Id', `AUTH-${uid}`, `REFRESH-${uid}`, 'Domain', 'Tag'
-  ]);
+  // Capture ALL cookies from any proton.me domain — including the parent-domain
+  // .proton.me cookies (e.g. Session-Id) that the Proton refresh API endpoint at
+  // api.proton.me/auth/v4/refresh requires. Capturing only mail.proton.me cookies
+  // caused refreshes to fail with 400 because the shared Session-Id was missing
+  // from the jar when go-proton-api sent the request to api.proton.me.
   const sessionCookies = cookies
-    .filter(c => c.domain === 'mail.proton.me' && SESSION_COOKIE_NAMES.has(c.name))
-    .map(c => ({ name: c.name, value: c.value, domain: c.domain, path: '/' }));
+    .filter(c =>
+      c.domain === 'mail.proton.me' ||
+      c.domain === '.proton.me' ||
+      c.domain === 'proton.me' ||
+      c.domain === 'account.proton.me'
+    )
+    .map(c => ({ name: c.name, value: c.value, domain: c.domain, path: c.path || '/' }));
+
+  // Log which domains contributed cookies so missing ones are immediately visible.
+  const byDomain = {};
+  sessionCookies.forEach(c => { byDomain[c.domain] = (byDomain[c.domain] || 0) + 1; });
 
   const bootstrap = {
     uid,
@@ -99,6 +109,16 @@ const fs = require('fs');
   console.log(`   AccessToken:  ${accessToken.slice(0, 8)}…`);
   console.log(`   RefreshToken: ${refreshToken.slice(0, 8)}…`);
   console.log(`   Cookies:      ${sessionCookies.length} session cookie(s)`);
+  console.log('   Cookie domains:');
+  Object.entries(byDomain).forEach(([d, n]) => console.log(`     ${d}: ${n} cookie(s)`));
+  const hasParentDomain = sessionCookies.some(c => c.domain === '.proton.me' || c.domain === 'proton.me');
+  if (!hasParentDomain) {
+    console.warn('');
+    console.warn('⚠️  WARNING: No .proton.me parent-domain cookies were captured.');
+    console.warn('   The Proton refresh endpoint needs the Session-Id from .proton.me.');
+    console.warn('   Without it, token refreshes will fail with 400 after ~24h.');
+    console.warn('   Try: fully reload Proton Mail in the browser before pressing Enter.');
+  }
   console.log('');
   console.log('📤 Next step: upload proton-bootstrap.json via the Config page');
   console.log('   Config → Proton Authentication → Browser Login Bootstrap → Upload');
