@@ -1,8 +1,12 @@
-<img src="./llamalabel.png" alt="Llama Labels" />
 
-# llama Labels
 
-llama Labels is a Dockerized Proton Mail auto-labeler.
+# Labels for Proton Mail
+
+Labels for Proton Mail is a Dockerized Proton Mail auto-labeler.
+
+WARNING: This Code has a Unfixable Bug Where Sessions only last 24 Hours.
+Attempting to login with your Proton Login will hard fail from Bot Protection.
+Until Proton allows automated inbox access this prject is dead.
 
 It polls unread inbox mail, classifies each message with an internal Ollama model (`nemotron-3-nano:4b` by default), and applies matching Proton labels.
 
